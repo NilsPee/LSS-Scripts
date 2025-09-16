@@ -1,0 +1,189 @@
+// ==UserScript==
+// @name         LS Auto-Assign Trailer
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Weist im Fahrzeug-Tab der Leitstelle Anhänger passenden Zugfahrzeugen zu
+// @author       Silberfighter & NilsPe
+// @match        https://www.leitstellenspiel.de/buildings/*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const links = [
+    //hier die anhänger --> Zugfahrzeug Kombinationen eintragen
+
+    [102, 123], // Anh 7    → LKW 7 Lbw (FGr WP)
+    [101, 100], // Anh SwPu → MLW 4
+    [70, 64], // MZB-Boot → Gw-Wasser
+  ];
+
+  function getVehiclesFromTable() {
+    const rows = Array.from(document.querySelectorAll('#vehicle_table tbody tr'));
+    let vehicles = [];
+
+    for (const row of rows) {
+      const link = row.querySelector('td:nth-child(2) a');
+      if (!link) continue;
+
+      const id = Number(link.getAttribute('href').replace(/\D/g, ''));
+      const img = row.querySelector('img.vehicle_image_reload');
+      const typeId = img ? Number(img.getAttribute('vehicle_type_id')) : null;
+      const typeName = row.querySelector('td:nth-child(2)')?.innerText.trim() || '';
+
+      const buildingLink = row.querySelector("td a[href^='/buildings/']");
+      const buildingId = buildingLink
+        ? Number(buildingLink.getAttribute("href").replace(/\D/g, ""))
+        : null;
+
+      vehicles.push({
+        id,
+        typeId,
+        typeName,
+        buildingId,
+        tractive_vehicle_id: null,
+      });
+    }
+
+    return vehicles;
+  }
+
+  function isTowVehicleFree(vehicleId, allVehicles) {
+    return !allVehicles.some((v) => v.tractive_vehicle_id === vehicleId);
+  }
+
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function autoAssignTrailers() {
+    const btn = document.getElementById('autoAssignBtn');
+    if (btn) {
+      btn.disabled = true;
+      btn.classList.remove('btn-success');
+      btn.classList.add('btn-secondary');
+      btn.innerText = 'Zuweisung läuft...';
+    }
+
+    const vehicles = getVehiclesFromTable();
+    if (!vehicles.length) {
+      updateStatus('Keine Fahrzeuge gefunden – bist du im Fahrzeug-Tab?');
+      resetButton();
+      return;
+    }
+
+    let overview = 'Gefundene Fahrzeuge pro Mapping:\n';
+    for (let [trailerType, towType] of links) {
+      const trailerCount = vehicles.filter((v) => v.typeId === trailerType).length;
+      const towCount = vehicles.filter((v) => v.typeId === towType).length;
+      overview += `- Trailer Typ ${trailerType}: ${trailerCount} | Tow Typ ${towType}: ${towCount}\n`;
+    }
+    updateStatus(overview);
+
+    let vehicleState = [...vehicles];
+
+    let totalAssignments = 0;
+    links.forEach(([trailerType]) => {
+      totalAssignments += vehicleState.filter((v) => v.typeId === trailerType).length;
+    });
+    let doneAssignments = 0;
+
+    for (let [trailerType, towType] of links) {
+      let trailers = vehicleState.filter((v) => v.typeId === trailerType);
+      let towing = vehicleState.filter((v) => v.typeId === towType);
+
+      for (let trailer of trailers) {
+        if (trailer.tractive_vehicle_id != null) continue;
+
+        let freeTow = towing.find(
+          (t) =>
+            isTowVehicleFree(t.id, vehicleState) &&
+            t.buildingId === trailer.buildingId
+        );
+
+        if (freeTow) {
+          doneAssignments++;
+          updateStatus(
+            `Zuweisung: ${doneAssignments}/${totalAssignments} (Trailer ${trailer.id}/${trailer.typeName}, Wache ${trailer.buildingId} → Zug ${freeTow.id}/${freeTow.typeName}, Wache ${freeTow.buildingId})`
+          );
+
+          try {
+            await $.post(`/vehicles/${trailer.id}`, {
+              _method: 'put',
+              authenticity_token: $("meta[name=csrf-token]").attr("content"),
+              'vehicle[tractive_random]': 0,
+              'vehicle[tractive_vehicle_id]': freeTow.id,
+            });
+          } catch (err) {
+            console.error('Fehler bei POST:', err);
+            updateStatus('Fehler beim Zuweisen – siehe Konsole');
+            resetButton();
+            return;
+          }
+
+          trailer.tractive_vehicle_id = freeTow.id;
+
+          const towIndex = vehicleState.findIndex((v) => v.id === freeTow.id);
+          if (towIndex > -1) {
+            vehicleState[towIndex].tractive_vehicle_id = trailer.id;
+          }
+
+          await delay(500);
+        }
+      }
+    }
+    updateStatus(`Zuweisung abgeschlossen! (${doneAssignments}/${totalAssignments})`);
+    resetButton();
+  }
+
+  function resetButton() {
+    const btn = document.getElementById('autoAssignBtn');
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove('btn-secondary');
+      btn.classList.add('btn-success');
+      btn.innerText = 'Auto-Assign Trailer';
+    }
+  }
+
+  function updateStatus(text) {
+    let status = document.getElementById('autoAssignStatus');
+    if (status) status.innerText = text;
+  }
+
+  function addButton() {
+    if (document.getElementById('autoAssignBtn')) return;
+
+    const table = document.querySelector('#vehicle_table');
+    if (!table) return;
+
+    let btn = document.createElement('button');
+    btn.id = 'autoAssignBtn';
+    btn.innerText = 'Auto-Assign Trailer';
+    btn.style.margin = '10px';
+    btn.className = 'btn btn-success';
+    btn.onclick = autoAssignTrailers;
+
+    let status = document.createElement('div');
+    status.id = 'autoAssignStatus';
+    status.style.margin = '5px';
+    status.style.fontWeight = 'bold';
+    status.style.color = 'white'; // weiße Schrift
+    status.innerText = 'Bereit';
+
+    table.before(btn);
+    btn.after(status);
+
+    console.log('Auto-Assign Trailer Button + Status eingefügt');
+  }
+
+  const interval = setInterval(() => {
+    const tabActive = document.querySelector('#tab_vehicle.active');
+    const table = document.querySelector('#vehicle_table');
+    if (tabActive && table) {
+      addButton();
+      clearInterval(interval);
+    }
+  }, 1000);
+})();

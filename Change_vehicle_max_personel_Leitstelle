@@ -1,0 +1,103 @@
+// ==UserScript==
+// @name         LS Change Vehicle max personel
+// @namespace    http://tampermonkey.net/
+// @version      5
+// @description  Ändert die maximale Personenanzahl für alle Fahrzeuge (egal ob in einer Wache oder Leitstelle) mit einem Klick, inkl. Fortschrittsanzeige. Button wird automatisch nachgeladen, wenn die Fahrzeugliste geöffnet wird, Reload nach 5 Sekunden Verzögerung.
+// @author       Silberfighter & NilsPe
+// @include      https://www.leitstellenspiel.de/buildings/*
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=leitstellenspiel.de
+// @grant        none
+// ==/UserScript==
+
+(async function() {
+    // Einträge: [vehicleTypeId, maxPersonal]
+    var vehicleTypeIdToClassName = [
+        [35, 1],
+        [50, 1],
+        [72, 5],
+        [79, 1],
+        [80, 1],
+        [81, 1],
+        [82, 1],
+        [94, 1],
+        [52, 1],
+    ];
+
+    // prüft regelmäßig, ob die Tabelle existiert und der Button fehlt
+    function addButtonIfMissing() {
+        if ($("#vehicle_table").length && !$("#changeMaxPerson").length) {
+            $("#vehicle_table").before(`
+                <a class="btn btn-success btn-xs" id="changeMaxPerson">
+                    ändern der max Personen
+                </a>
+                <div id="changeStatus" style="margin-top:5px; font-weight:bold;"></div>
+            `);
+
+            $("#changeMaxPerson").on("click", function() {
+                getRelevantVehicles();
+            });
+        }
+    }
+
+    // alle 2 Sekunden prüfen (für Tabs, Ajax-Reloads, etc.)
+    setInterval(addButtonIfMissing, 2000);
+
+    async function getRelevantVehicles(){
+        var vehicleList = Array.prototype.slice.call(
+            $("#vehicle_table")[0].getElementsByTagName("tbody")[0].getElementsByTagName("tr")
+        );
+
+        let total = vehicleList.length;
+        let processed = 0;
+
+        for(let i = 0; i < total; i++){
+            let result = isVehicleIdInArray(getVehicleTypeID(vehicleList[i]));
+            if(result && getCurMaxPer(vehicleList[i]) != result){
+                console.log("vehicle "+ getVehicleID(vehicleList[i]) + " -> " + result);
+                $.post("/vehicles/" + getVehicleID(vehicleList[i]), {
+                    "vehicle": { "personal_max": result },
+                    "_method": "put",
+                    "authenticity_token": $("meta[name=csrf-token]").attr("content")
+                });
+                await delay(200); // bewusst so gelassen
+            }
+            processed++;
+            updateStatus(processed, total);
+        }
+
+        $("#changeMaxPerson")[0].innerHTML = "Anzahl Personen wurden geändert";
+        $("#changeStatus").text("Fertig: Alle Fahrzeuge wurden angepasst. Seite lädt in 5 Sekunden neu...");
+
+        // Reload nach 5 Sekunden
+        setTimeout(() => {
+            window.location.reload();
+        }, 5000);
+    }
+
+    function updateStatus(done, total){
+        $("#changeStatus").text(`Bearbeitet: ${done} / ${total}`);
+    }
+
+    function isVehicleIdInArray(vehId){
+        var result = vehicleTypeIdToClassName.filter((e) => e[0] == vehId);
+        if(result.length > 0){
+            return result[0][1];
+        }
+    }
+
+    function getVehicleTypeID(e){
+        return e.getElementsByTagName("td")[0].getElementsByTagName("img")[0].getAttribute("vehicle_type_id");
+    }
+
+    function getVehicleID(e){
+        return e.getElementsByTagName("td")[1].getElementsByTagName("a")[0].getAttribute("href").replace(/[A-Za-z0-9]+/, "").replaceAll("/","");
+    }
+
+    function getCurMaxPer(e){
+        return parseInt(e.getElementsByTagName("td")[5].innerHTML);
+    }
+
+    function delay(time) {
+        return new Promise(resolve => setTimeout(resolve, time));
+    }
+})();
