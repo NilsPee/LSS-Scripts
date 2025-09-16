@@ -1,0 +1,374 @@
+// ==UserScript==
+// @name         LS Button for assigning people
+// @namespace    http://tampermonkey.net/
+// @version      1.5
+// @description  Weist mit einem Klick allen Fahrzeugen automatisch passendes Personal zu, nur mit richtiger Ausbildung und mit Vorgabe der Menge. Fahrzeuge ohne Ausbildung werden direkt übersprungen.
+// @author       Kruemmel & NilsPe
+// @match        https://www.leitstellenspiel.de/buildings/*
+// @grant        none
+// ==/UserScript==
+
+(async function () {
+  'use strict';
+
+  const PER_PERSON_DELAY_MS = 100; // Wartezeit zwischen einzelnen Zuweisungen
+  const PER_VEHICLE_DELAY_MS = 150; // Wartezeit nach Abschluss eines Fahrzeugs
+
+  // --- Eigene Konfiguration: Fahrzeug-Typ-ID => Anzahl Personen ---
+  const FORCE_ASSIGN = {
+      12: 1,
+      27: 1,
+      29: 1,
+      31: 1,
+      33: 1,
+      34: 1,
+      35: 1,
+      40: 1,
+      42: 1,
+      45: 1,
+      46: 1,
+      51: 1,
+      53: 6,
+      55: 1,
+      56: 1,
+      57: 1,
+      59: 1,
+      60: 1,
+      61: 1,
+      63: 1,
+      64: 1,
+      69: 1,
+      72: 1,
+      74: 1,
+      75: 1,
+      76: 1,
+      79: 1,
+      80: 1,
+      81: 1,
+      82: 1,
+      83: 1,
+      84: 1,
+      85: 1,
+      86: 1,
+      91: 1,
+      93: 1,
+      94: 1,
+      95: 1,
+      98: 1,
+      99: 1,
+      100: 1,
+      103: 1,
+      109: 1,
+      122: 1,
+      123: 1,
+      125: 1,
+      126: 1,
+      127: 1,
+      128: 1,
+      131: 1,
+      133: 1,
+      134: 1,
+      135: 1,
+      137: 1,
+      140: 1,
+      144: 1,
+      145: 1,
+      147: 1,
+      148: 1,
+      149: 1,
+      151: 1,
+      153: 1,
+      158: 1,
+      162: 1,
+      163: 1,
+      164: 1,
+      165: 1,
+  };
+
+  function addButtonIfMissing() {
+    if ($("#vehicle_table").length && !$("#assignAllPersonnel").length) {
+      $("#vehicle_table").before(`
+        <a class="btn btn-primary btn-xs" id="assignAllPersonnel">
+          Personal zuweisen (alle Fahrzeuge)
+        </a>
+        <div id="assignStatus" style="margin-top:5px; font-weight:bold;"></div>
+        <div id="assignLog" style="margin-top:5px; font-family:monospace; white-space:pre-line; margin-top:6px; max-height:300px; overflow:auto;"></div>
+      `);
+
+      $("#assignAllPersonnel").on("click", function () {
+        $("#assignAllPersonnel").addClass("disabled");
+        assignAllVehicles().finally(() => $("#assignAllPersonnel").removeClass("disabled"));
+      });
+    }
+  }
+
+  setInterval(addButtonIfMissing, 1500);
+
+  async function assignAllVehicles() {
+    const rows = Array.from($("#vehicle_table tbody tr"));
+    const total = rows.length;
+    let processed = 0;
+
+    $("#assignLog").text("");
+    for (const row of rows) {
+      const vehId = getVehicleID(row);
+      try {
+        const result = await assignVehicle(vehId);
+        logVehicle(result);
+      } catch (e) {
+        console.warn("Fehler bei Fahrzeug " + vehId, e);
+        logVehicle({ id: vehId, assigned: 0, cap: 0, error: true, message: e && e.message });
+      }
+
+      processed++;
+      updateStatus(processed, total);
+      await delay(PER_VEHICLE_DELAY_MS);
+    }
+
+    $("#assignAllPersonnel")[0].innerHTML = "Personal wurde zugewiesen";
+    $("#assignStatus").text("Fertig! Seite lädt in 5 Sekunden neu...");
+    setTimeout(() => location.reload(), 5000);
+  }
+
+  function updateStatus(done, total) {
+    $("#assignStatus").text(`Bearbeitet: ${done} / ${total}`);
+  }
+
+  function logVehicle({ id, assigned, cap, error, message }) {
+    let msg;
+    if (message && message.startsWith("Übersprungen")) {
+      msg = `Fahrzeug ${id}: ${message}`;
+    } else {
+      msg = error
+        ? `Fahrzeug ${id}: Fehler beim Zuweisen${message ? " — " + message : ""}`
+        : `Fahrzeug ${id}: ${assigned}/${cap} besetzt`;
+    }
+    $("#assignLog").append(msg + "\n");
+  }
+
+  function getVehicleID(e) {
+    return e.getElementsByTagName("td")[1]
+      .getElementsByTagName("a")[0]
+      .getAttribute("href")
+      .replace(/\D/g, "");
+  }
+
+async function assignVehicle(vehicleId) {
+  // 1) Hole vehicle_type über API
+  let vehicleTypeId = null;
+  try {
+    const vresp = await fetch(`/api/v2/vehicles/${vehicleId}`);
+    if (!vresp.ok) throw new Error("Vehicle API nicht erreichbar: " + vresp.status);
+    const vjson = await vresp.json();
+    vehicleTypeId = vjson.result && vjson.result.vehicle_type;
+  } catch (e) {
+    throw new Error("Fehler beim Abfragen des vehicle_type: " + e.message);
+  }
+
+  // 2) Identifier berechnen
+  const identifier = getIdentifierByVehicleTypeId(vehicleTypeId);
+
+  // --- Nur Fahrzeuge aus FORCE_ASSIGN bearbeiten ---
+  if (FORCE_ASSIGN[vehicleTypeId] === undefined) {
+    return { id: vehicleId, assigned: 0, cap: 0, error: false, message: "Übersprungen (nicht in Liste)" };
+  }
+
+  // 3) Zuweisungsseite laden
+  const resp = await fetch(`/vehicles/${vehicleId}/zuweisung`, { headers: { "x-requested-with": "XMLHttpRequest" } });
+  if (!resp.ok) throw new Error("Zuweisungsseite nicht erreichbar: " + resp.status);
+  const html = await resp.text();
+
+  // 4) Virtuelles DOM erzeugen
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+
+  const assignedEl = doc.querySelector("#count_personal");
+  if (!assignedEl) throw new Error("count_personal Element nicht gefunden");
+
+  const capText = assignedEl.parentElement.firstElementChild.innerText || "";
+  const cap = parseInt(capText.replace(/\D/g, "")) || 0;
+  let assigned = parseInt(assignedEl.innerText.replace(/\D/g, "")) || 0;
+
+  // Vorgabe aus FORCE_ASSIGN
+  const wanted = FORCE_ASSIGN[vehicleTypeId];
+
+  // Wenn schon genug Leute drin sind -> sofort überspringen
+  if (assigned >= wanted) {
+    return { id: vehicleId, assigned, cap, error: false, message: "Übersprungen (bereits genug Personal)" };
+  }
+
+  // Berechne, wie viele noch fehlen
+  let toAssign = wanted - assigned;
+
+  // Falls Vorgabe kleiner/gleich 0, ebenfalls skippen
+  if (toAssign <= 0) {
+    return { id: vehicleId, assigned, cap, error: false, message: "Übersprungen (Menge 0)" };
+  }
+
+  const csrf = document.querySelector("meta[name=csrf-token]").content;
+
+  // 5) Auswahl abhängig vom Identifier
+  let candidateRows;
+  if (identifier) {
+    // Fahrzeuge mit spezieller Ausbildung
+    candidateRows = Array.from(doc.querySelectorAll(`tr[data-filterable-by*="${identifier}"]`));
+    if (!candidateRows || candidateRows.length === 0) {
+      return { id: vehicleId, assigned, cap, error: true, message: "Keine passenden Personen gefunden" };
+    }
+  } else {
+    // Fahrzeuge ohne spezielle Ausbildung → nur Personen ohne Zusatz-Ausbildung
+    candidateRows = Array.from(doc.querySelectorAll("tr")).filter(r => {
+      const btn = r.querySelector("a.btn-success");
+      if (!btn) return false;
+      const qualCol = r.children[1];
+      if (!qualCol) return true;
+      const qualText = qualCol.innerText.trim().toLowerCase();
+      return qualText === "" || qualText === "-";
+    });
+  }
+
+  // 6) Filter: keine Personen "Im Unterricht"
+  candidateRows = candidateRows.filter(row => {
+    try {
+      const col = row.children[2];
+      if (!col) return true;
+      return !col.innerText.trim().startsWith("Im Unterricht");
+    } catch {
+      return true;
+    }
+  });
+
+  // 7) Personen zuweisen (mit Retry-Mechanismus)
+  for (const row of candidateRows) {
+    if (toAssign <= 0) break;
+
+    const btn = row.querySelector("a.btn-success");
+    if (!btn) continue;
+
+    try {
+      let success = false;
+
+      // bis zu 2 Retries bei Fehlern
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const postResp = await fetch(btn.href, {
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "x-csrf-token": csrf,
+            "x-requested-with": "XMLHttpRequest",
+          },
+        });
+
+        if (postResp.ok) {
+          success = true;
+          break; // raus aus dem Retry-Loop
+        } else {
+          console.warn(`Assign POST Fehler vehicle ${vehicleId} -> ${postResp.status}, Versuch ${attempt + 1}`);
+          // bei 429 (Rate Limit) längere Pause
+          if (postResp.status === 429) {
+            await delay(1000);
+          } else {
+            await delay(200);
+          }
+        }
+      }
+
+      if (!success) {
+        console.warn(`Fahrzeug ${vehicleId}: Zuweisung endgültig fehlgeschlagen`);
+        continue;
+      }
+
+      assigned++;
+      toAssign--;
+      await delay(PER_PERSON_DELAY_MS);
+
+    } catch (e) {
+      console.warn("Fehler beim Assign POST", e);
+    }
+  }
+
+  return { id: vehicleId, assigned, cap };
+}
+
+
+
+  function delay(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
+
+  // --- getIdentifierByVehicleTypeId (aus BOS-Ernie Script, angepasst) ---
+  function getIdentifierByVehicleTypeId(vehicleTypeId) {
+    switch (vehicleTypeId) {
+      case 12: return "gw_messtechnik";
+      case 27: return "gw_gefahrgut";
+      case 29: return "notarzt";
+      case 31: return "notarzt";
+      case 33: return "gw_hoehenrettung";
+      case 34: return "elw2";
+      case 35: return "police_einsatzleiter";
+      case 40: return "thw_zugtrupp";
+      case 42: return "thw_raumen";
+      case 45: return "thw_raumen";
+      case 46: return "wechsellader";
+      case 51: return "police_fukw";
+      case 53: return "dekon_p";
+      case 55: return "lna";
+      case 56: return "orgl";
+      case 57: return "fwk";
+      case 59: return "seg_elw";
+      case 60: return "seg_gw_san";
+      case 61: return "polizeihubschrauber";
+      case 63: return "gw_taucher";
+      case 64: return "gw_wasserrettung";
+      case 69: return "gw_taucher";
+      case 72: return "police_wasserwerfer";
+      case 74: return "notarzt";
+      case 75: return "arff";
+      case 76: return "rettungstreppe";
+      case 79: return "police_sek";
+      case 80: return "police_sek";
+      case 81: return "police_mek";
+      case 82: return "police_mek";
+      case 83: return "werkfeuerwehr";
+      case 84: return "werkfeuerwehr";
+      case 85: return "werkfeuerwehr";
+      case 86: return "werkfeuerwehr";
+      case 91: return "seg_rescue_dogs";
+      case 93: return "thw_rescue_dogs";
+      case 94: return "k9";
+      case 95: return "police_motorcycle";
+      case 98: return "criminal_investigation";
+      case 99: return "water_damage_pump";
+      case 100: return "water_damage_pump";
+      case 103: return "police_service_group_leader";
+      case 109: return "heavy_rescue";
+      case 122: return "thw_energy_supply";
+      case 123: return "water_damage_pump";
+      case 125: return "thw_drone";
+      case 126: return "fire_drone";
+      case 127: return "seg_drone";
+      case 128: return "fire_drone";
+      case 131: return "care_service";
+      case 133: return "care_service_equipment";
+      case 134: return "police_horse";
+      case 135: return "police_horse";
+      case 137: return "police_horse";
+      case 140: return "fire_care_service";
+      case 144: return "thw_command";
+      case 145: return "thw_command";
+      case 147: return "thw_command";
+      case 148: return "thw_command";
+      case 149: return "notarzt";
+      case 151: return "mountain_command";
+      case 153: return "seg_rescue_dogs";
+      case 158: return "mountain_height_rescue";
+      case 162: return "railway_fire";
+      case 163: return "railway_fire";
+      case 164: return "railway_fire";
+      case 165: return "police_speaker_operator";
+      default: return null;
+    }
+  }
+  // --- Ende Identifier-Funktion ---
+
+})();
