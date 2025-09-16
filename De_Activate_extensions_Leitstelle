@@ -1,0 +1,162 @@
+// ==UserScript==
+// @name         LS De-/Activate Extensions
+// @namespace    http://tampermonkey.net/
+// @version      2.4
+// @description  (De)aktiviert Erweiterungen Leitstellenweise, bearbeitet nur Erweiterungen die in config konfiguriert wurden
+// @author       Silberfighter & NilsPe
+// @match        https://www.leitstellenspiel.de/buildings*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  //konfiguration des/der Button(s)
+  const config = [
+    {
+      label: "Erweiterungen aktivieren",
+      keywords: [
+        "1. Technischer Zug: Fachgruppe Notversorgung/Notinstandsetzung",
+        "1. Technischer Zug: Zugtrupp",
+        "Fachgruppe Räumen",
+        "Fachgruppe Wasserschaden/Pumpen",
+        "Fachgruppe Schwere Bergung",
+        "Fachzug Führung und Kommunikation"
+      ],
+      action: "aktivieren",
+      color: "success"
+    }
+    // Beispiel für Deaktivieren:
+    // {
+    //   label: "Erweiterungen deaktivieren",
+    //   keywords: ["Zelle"],
+    //   action: "deaktivieren",
+    //   color: "danger"
+    // }
+  ];
+
+  //Hilfsfunktionen
+  const delay = (ms) => new Promise(r => setTimeout(r, ms));
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const getCsrf = () => document.querySelector('meta[name="csrf-token"]')?.content || "";
+
+  async function postWithCsrf(url) {
+    const csrf = getCsrf();
+    const body = new URLSearchParams({
+      "_method": "post",
+      "authenticity_token": csrf
+    }).toString();
+
+    const res = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "x-requested-with": "XMLHttpRequest",
+        "x-csrf-token": csrf
+      },
+      body
+    });
+
+    return res.ok;
+  }
+
+  function addButtonsIfMissing() {
+    const tab = document.querySelector('#tab_extensions');
+    if (!tab) return;
+    const table = tab.querySelector('table');
+    if (!table) return;
+
+    if (tab.querySelector('.ext-control-container')) return;
+
+    const container = document.createElement('div');
+    container.className = 'ext-control-container';
+    container.style.margin = '10px 0';
+
+    config.forEach(cfg => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = cfg.label;
+      btn.className = `btn btn-${cfg.color}`;
+      btn.style.marginRight = '8px';
+
+      const status = document.createElement('span');
+      status.style.marginLeft = '6px';
+      status.style.fontWeight = 'bold';
+
+      const kw = cfg.keywords.map(norm);
+
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        status.style.color = 'white';
+
+        const rows = Array.from(table.querySelectorAll('tr')).filter(row => {
+          const firstTd = row.querySelector('td');
+          if (!firstTd) return false;
+          const text = norm(firstTd.innerText);
+          return kw.some(k => text.includes(k));
+        });
+
+        //Nur die Erweiterungen, die geändert werden müssen werden ausgewählt
+        const toChange = rows.filter(row => {
+
+          const link = Array.from(row.querySelectorAll('a.btn'))
+            .find(a => {
+              const t = (a.textContent || "").trim();
+              return t === "Einsatzbereit" || t === "Nicht einsatzbereit";
+            });
+          if (!link) return false;
+
+          const t = (link.textContent || "").trim();
+          return (cfg.action === "aktivieren" && t === "Einsatzbereit") ||
+                 (cfg.action === "deaktivieren" && t === "Nicht einsatzbereit");
+        });
+
+        const total = toChange.length;
+        let done = 0;
+
+        if (total === 0) {
+          status.textContent = "Alles bereits im gewünschten Zustand";
+          status.style.color = 'green';
+          btn.disabled = false;
+          return;
+        }
+
+        status.textContent = `0 / ${total} … läuft`;
+
+        for (const row of toChange) {
+          const link = Array.from(row.querySelectorAll('a.btn'))
+            .find(a => {
+              const t = (a.textContent || "").trim();
+              return (cfg.action === "aktivieren" && t === "Einsatzbereit") ||
+                     (cfg.action === "deaktivieren" && t === "Nicht einsatzbereit");
+            });
+          if (!link) continue;
+
+          try {
+            const ok = await postWithCsrf(link.href);
+            if (ok) done++;
+          } catch (e) {
+            console.warn("POST fehlgeschlagen:", link?.href, e);
+          }
+
+          status.textContent = `${done} / ${total} … läuft`;
+          await delay(200);
+        }
+
+        status.textContent = `✔ Fertig (${done} / ${total})`;
+        status.style.color = 'green';
+        btn.disabled = false;
+      });
+
+      container.appendChild(btn);
+      container.appendChild(status);
+      container.appendChild(document.createElement('br'));
+    });
+
+    table.parentNode.insertBefore(container, table);
+  }
+
+  // robust gegen AJAX-Nachladen
+  setInterval(addButtonsIfMissing, 1500);
+})();
