@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Autobuy vehicles LS
+// @name         Leitstelle Autobuy vehicles
 // @namespace    http://tampermonkey.net/
 // @version      4.0.1
 // @description  Fahrzeuge automatisch kaufen – funktioniert sowohl in Einzelwachen als auch in Leitstellen (alle zugeordneten Wachen)
@@ -335,13 +335,13 @@ for (const b of buildings) {
   // Leitstelle
   if (buildingTypeID === 7) {
     let wrapperDIV = document.createElement("div");
-    wrapperDIV.innerText = "Leitstelle - Autobuy:";
+    wrapperDIV.innerText = "Leitstelle - Autobuy Vehicles:";
     wrapperDIV.style.padding = "15px 5px 15px 5px";
     titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
 
     let btn = document.createElement("a");
-    btn.className = "btn btn-danger btn-xs";
-    btn.innerText = "Autobuy alle zugeordneten Wachen";
+    btn.className = "btn btn-success btn-xs";
+    btn.innerText = "Autobuy Vehicles";
     btn.style.margin = "5px";
     wrapperDIV.appendChild(btn);
 
