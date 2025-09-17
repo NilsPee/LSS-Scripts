@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         LS Button for assigning people
 // @namespace    http://tampermonkey.net/
-// @version      1.5
-// @description  Weist mit einem Klick allen Fahrzeugen automatisch passendes Personal zu, nur mit richtiger Ausbildung und mit Vorgabe der Menge. Fahrzeuge ohne Ausbildung werden direkt übersprungen.
+// @version      1.7
+// @description  Weist mit einem Klick allen Fahrzeugen automatisch passendes Personal zu, nur mit richtiger Ausbildung und mit Vorgabe der Menge. Fahrzeuge ohne Ausbildung werden direkt übersprungen und Überhänge korrigiert.
 // @author       Kruemmel & NilsPe
 // @match        https://www.leitstellenspiel.de/buildings/*
 // @grant        none
@@ -11,78 +11,79 @@
 (async function () {
   'use strict';
 
-  const PER_PERSON_DELAY_MS = 100; // Wartezeit zwischen einzelnen Zuweisungen
-  const PER_VEHICLE_DELAY_MS = 150; // Wartezeit nach Abschluss eines Fahrzeugs
+  const PER_PERSON_DELAY_MS = 120; // kurze Pause je Aktion
+  const PER_VEHICLE_DELAY_MS = 180; // Pause zwischen Fahrzeugen
 
-  // --- Eigene Konfiguration: Fahrzeug-Typ-ID => Anzahl Personen ---
+  // --- Eigene Konfiguration: Fahrzeug-Typ-ID => gewünschte Personenanzahl ---
   const FORCE_ASSIGN = {
-      12: 1,
-      27: 1,
-      29: 1,
-      31: 1,
-      33: 1,
-      34: 1,
-      35: 1,
-      40: 1,
-      42: 1,
-      45: 1,
-      46: 1,
-      51: 1,
-      53: 6,
-      55: 1,
-      56: 1,
-      57: 1,
-      59: 1,
-      60: 1,
-      61: 1,
-      63: 1,
-      64: 1,
-      69: 1,
-      72: 1,
-      74: 1,
-      75: 1,
-      76: 1,
-      79: 1,
-      80: 1,
-      81: 1,
-      82: 1,
-      83: 1,
-      84: 1,
-      85: 1,
-      86: 1,
-      91: 1,
-      93: 1,
-      94: 1,
-      95: 1,
-      98: 1,
-      99: 1,
-      100: 1,
-      103: 1,
-      109: 1,
-      122: 1,
-      123: 1,
-      125: 1,
-      126: 1,
-      127: 1,
-      128: 1,
-      131: 1,
-      133: 1,
-      134: 1,
-      135: 1,
-      137: 1,
-      140: 1,
-      144: 1,
-      145: 1,
-      147: 1,
-      148: 1,
-      149: 1,
-      151: 1,
-      153: 1,
-      158: 1,
-      162: 1,
-      163: 1,
-      164: 1,
-      165: 1,
+    12: 1,
+
+    27: 1,
+    29: 2,
+    31: 1,
+    33: 1,
+    34: 1,
+    35: 1,
+    40: 1,
+    42: 1,
+    45: 1,
+    46: 1,
+    51: 1,
+    53: 6,
+    55: 1,
+    56: 1,
+    57: 1,
+    59: 1,
+    60: 1,
+    61: 1,
+    63: 1,
+    64: 1,
+    69: 1,
+    72: 1,
+    74: 2,
+    75: 1,
+    76: 1,
+    79: 1,
+    80: 1,
+    81: 1,
+    82: 1,
+    83: 1,
+    84: 1,
+    85: 1,
+    86: 1,
+    91: 1,
+    93: 1,
+    94: 1,
+    95: 1,
+    98: 1,
+    99: 1,
+    100: 1,
+    103: 1,
+    109: 1,
+    122: 1,
+    123: 1,
+    125: 1,
+    126: 1,
+    127: 1,
+    128: 1,
+    131: 1,
+    133: 1,
+    134: 1,
+    135: 1,
+    137: 1,
+    140: 1,
+    144: 1,
+    145: 1,
+    147: 1,
+    148: 4,
+    149: 1,
+    151: 1,
+    153: 1,
+    158: 1,
+    162: 1,
+    163: 1,
+    164: 1,
+    165: 1,
   };
 
   function addButtonIfMissing() {
@@ -101,7 +102,6 @@
       });
     }
   }
-
   setInterval(addButtonIfMissing, 1500);
 
   async function assignAllVehicles() {
@@ -117,7 +117,7 @@
         logVehicle(result);
       } catch (e) {
         console.warn("Fehler bei Fahrzeug " + vehId, e);
-        logVehicle({ id: vehId, assigned: 0, cap: 0, error: true, message: e && e.message });
+        logVehicle({ id: vehId, assigned: 0, cap: 0, error: true, message: e && e.message, wanted: 0 });
       }
 
       processed++;
@@ -134,16 +134,30 @@
     $("#assignStatus").text(`Bearbeitet: ${done} / ${total}`);
   }
 
-  function logVehicle({ id, assigned, cap, error, message }) {
-    let msg;
-    if (message && message.startsWith("Übersprungen")) {
+  function logVehicle({ id, assigned, cap, error, message, wanted }) {
+    let msg, color;
+
+    if (error) {
+      msg = `Fahrzeug ${id}: Fehler beim Zuweisen${message ? " — " + message : ""}`;
+      color = "red";
+    } else if (message && message.startsWith("Übersprungen")) {
       msg = `Fahrzeug ${id}: ${message}`;
+      color = "gray";
+    } else if (assigned === wanted) {
+      msg = `Fahrzeug ${id}: ${assigned}/${wanted} besetzt (voll besetzt)`;
+      color = "green";
+    } else if (assigned < wanted) {
+      msg = `Fahrzeug ${id}: ${assigned}/${wanted} besetzt (nicht voll)`;
+      color = "orange";
+    } else if (assigned > wanted) {
+      msg = `Fahrzeug ${id}: ${assigned}/${wanted} besetzt (zu viele, korrigiert)`;
+      color = "orange";
     } else {
-      msg = error
-        ? `Fahrzeug ${id}: Fehler beim Zuweisen${message ? " — " + message : ""}`
-        : `Fahrzeug ${id}: ${assigned}/${cap} besetzt`;
+      msg = `Fahrzeug ${id}: ${assigned}/${cap} besetzt (keine Zuweisung erfolgt)`;
+      color = "gray";
     }
-    $("#assignLog").append(msg + "\n");
+
+    $("#assignLog").append(`<span style="color:${color}">${msg}</span>\n`);
   }
 
   function getVehicleID(e) {
@@ -153,150 +167,140 @@
       .replace(/\D/g, "");
   }
 
-async function assignVehicle(vehicleId) {
-  // 1) Hole vehicle_type über API
-  let vehicleTypeId = null;
-  try {
-    const vresp = await fetch(`/api/v2/vehicles/${vehicleId}`);
-    if (!vresp.ok) throw new Error("Vehicle API nicht erreichbar: " + vresp.status);
-    const vjson = await vresp.json();
-    vehicleTypeId = vjson.result && vjson.result.vehicle_type;
-  } catch (e) {
-    throw new Error("Fehler beim Abfragen des vehicle_type: " + e.message);
+  // ---- Hilfsfunktionen ----
+  async function fetchAssignDoc(vehicleId) {
+    const resp = await fetch(`/vehicles/${vehicleId}/zuweisung`, {
+      headers: { "x-requested-with": "XMLHttpRequest" },
+      credentials: "same-origin",
+    });
+    if (!resp.ok) throw new Error("Zuweisungsseite nicht erreichbar: " + resp.status);
+    const html = await resp.text();
+    const parser = new DOMParser();
+    return parser.parseFromString(html, "text/html");
   }
 
-  // 2) Identifier berechnen
-  const identifier = getIdentifierByVehicleTypeId(vehicleTypeId);
-
-  // --- Nur Fahrzeuge aus FORCE_ASSIGN bearbeiten ---
-  if (FORCE_ASSIGN[vehicleTypeId] === undefined) {
-    return { id: vehicleId, assigned: 0, cap: 0, error: false, message: "Übersprungen (nicht in Liste)" };
+  function parseCap(doc) {
+    const el = doc.querySelector("#count_personal");
+    if (!el) return { assignedCapRaw: 0, cap: 0 };
+    const text = el.parentElement?.textContent || "";
+    const m = text.match(/(\d+)\s*\/\s*(\d+)/);
+    if (!m) return { assignedCapRaw: 0, cap: 0 };
+    return { assignedCapRaw: parseInt(m[1]) || 0, cap: parseInt(m[2]) || 0 };
   }
 
-  // 3) Zuweisungsseite laden
-  const resp = await fetch(`/vehicles/${vehicleId}/zuweisung`, { headers: { "x-requested-with": "XMLHttpRequest" } });
-  if (!resp.ok) throw new Error("Zuweisungsseite nicht erreichbar: " + resp.status);
-  const html = await resp.text();
-
-  // 4) Virtuelles DOM erzeugen
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, "text/html");
-
-  const assignedEl = doc.querySelector("#count_personal");
-  if (!assignedEl) throw new Error("count_personal Element nicht gefunden");
-
-  const capText = assignedEl.parentElement.firstElementChild.innerText || "";
-  const cap = parseInt(capText.replace(/\D/g, "")) || 0;
-  let assigned = parseInt(assignedEl.innerText.replace(/\D/g, "")) || 0;
-
-  // Vorgabe aus FORCE_ASSIGN
-  const wanted = FORCE_ASSIGN[vehicleTypeId];
-
-  // Wenn schon genug Leute drin sind -> sofort überspringen
-  if (assigned >= wanted) {
-    return { id: vehicleId, assigned, cap, error: false, message: "Übersprungen (bereits genug Personal)" };
-  }
-
-  // Berechne, wie viele noch fehlen
-  let toAssign = wanted - assigned;
-
-  // Falls Vorgabe kleiner/gleich 0, ebenfalls skippen
-  if (toAssign <= 0) {
-    return { id: vehicleId, assigned, cap, error: false, message: "Übersprungen (Menge 0)" };
-  }
-
-  const csrf = document.querySelector("meta[name=csrf-token]").content;
-
-  // 5) Auswahl abhängig vom Identifier
-  let candidateRows;
-  if (identifier) {
-    // Fahrzeuge mit spezieller Ausbildung
-    candidateRows = Array.from(doc.querySelectorAll(`tr[data-filterable-by*="${identifier}"]`));
-    if (!candidateRows || candidateRows.length === 0) {
-      return { id: vehicleId, assigned, cap, error: true, message: "Keine passenden Personen gefunden" };
+  function isRowMatching(row, identifier) {
+    if (identifier) {
+      const dfb = row.getAttribute("data-filterable-by") || "";
+      return dfb.includes(identifier);
+    } else {
+      const qualText = (row.children?.[1]?.innerText || "").trim().toLowerCase();
+      return qualText === "" || qualText === "-";
     }
-  } else {
-    // Fahrzeuge ohne spezielle Ausbildung → nur Personen ohne Zusatz-Ausbildung
-    candidateRows = Array.from(doc.querySelectorAll("tr")).filter(r => {
+  }
+
+  function collectRows(doc, identifier) {
+    const rows = Array.from(doc.querySelectorAll("tr"));
+    const boundMatchingRows = rows.filter(r => r.querySelector("a.btn-assigned") && isRowMatching(r, identifier));
+    const candidateRows = rows.filter(r => {
       const btn = r.querySelector("a.btn-success");
       if (!btn) return false;
-      const qualCol = r.children[1];
-      if (!qualCol) return true;
-      const qualText = qualCol.innerText.trim().toLowerCase();
-      return qualText === "" || qualText === "-";
+      if (!isRowMatching(r, identifier)) return false;
+      const col = r.children?.[2];
+      return !(col && col.innerText.trim().startsWith("Im Unterricht"));
     });
+    return { boundMatchingRows, candidateRows };
   }
 
-  // 6) Filter: keine Personen "Im Unterricht"
-  candidateRows = candidateRows.filter(row => {
+  async function assignVehicle(vehicleId) {
+    // 1) vehicle_type via API
+    let vehicleTypeId = null;
     try {
-      const col = row.children[2];
-      if (!col) return true;
-      return !col.innerText.trim().startsWith("Im Unterricht");
-    } catch {
-      return true;
+      const vresp = await fetch(`/api/v2/vehicles/${vehicleId}`, { credentials: "same-origin" });
+      if (!vresp.ok) throw new Error("Vehicle API nicht erreichbar: " + vresp.status);
+      const vjson = await vresp.json();
+      vehicleTypeId = vjson.result && vjson.result.vehicle_type;
+    } catch (e) {
+      throw new Error("Fehler beim Abfragen des vehicle_type: " + e.message);
     }
-  });
 
-  // 7) Personen zuweisen (mit Retry-Mechanismus)
-  for (const row of candidateRows) {
-    if (toAssign <= 0) break;
+    // 2) Nur Fahrzeuge aus FORCE_ASSIGN bearbeiten
+    if (FORCE_ASSIGN[vehicleTypeId] === undefined) {
+      return { id: vehicleId, assigned: 0, cap: 0, error: false, message: "Übersprungen (nicht in Liste)", wanted: 0 };
+    }
+    const wanted = FORCE_ASSIGN[vehicleTypeId];
+    const identifier = getIdentifierByVehicleTypeId(vehicleTypeId);
+    const csrf = document.querySelector("meta[name=csrf-token]")?.content || "";
+    const headers = {
+      "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "x-csrf-token": csrf,
+      "x-requested-with": "XMLHttpRequest",
+    };
 
-    const btn = row.querySelector("a.btn-success");
-    if (!btn) continue;
+    // 3) Seite holen + zählen
+    let doc = await fetchAssignDoc(vehicleId);
+    let { cap } = parseCap(doc);
+    let { boundMatchingRows, candidateRows } = collectRows(doc, identifier);
+    let assignedMatching = boundMatchingRows.length;
 
-    try {
-      let success = false;
+    // 4) Überhang abbauen
+    if (assignedMatching > wanted) {
+      let toRemove = assignedMatching - wanted;
+      for (const row of [...boundMatchingRows].reverse()) {
+        if (toRemove <= 0) break;
+        const delLink = row.querySelector("a.btn-assigned");
+        if (!delLink) continue;
 
-      // bis zu 2 Retries bei Fehlern
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const postResp = await fetch(btn.href, {
-          method: "POST",
-          headers: {
-            "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "x-csrf-token": csrf,
-            "x-requested-with": "XMLHttpRequest",
-          },
-        });
-
-        if (postResp.ok) {
-          success = true;
-          break; // raus aus dem Retry-Loop
-        } else {
-          console.warn(`Assign POST Fehler vehicle ${vehicleId} -> ${postResp.status}, Versuch ${attempt + 1}`);
-          // bei 429 (Rate Limit) längere Pause
-          if (postResp.status === 429) {
-            await delay(1000);
-          } else {
-            await delay(200);
+        try {
+          const r = await fetch(delLink.href, { method: "POST", headers, credentials: "same-origin" });
+          if (r.ok) {
+            toRemove--;
+            await delay(PER_PERSON_DELAY_MS);
+            doc = await fetchAssignDoc(vehicleId);
+            ({ cap } = parseCap(doc));
+            ({ boundMatchingRows, candidateRows } = collectRows(doc, identifier));
+            assignedMatching = boundMatchingRows.length;
           }
+        } catch (e) {
+          console.warn("Fehler beim Entfernen", e);
         }
       }
-
-      if (!success) {
-        console.warn(`Fahrzeug ${vehicleId}: Zuweisung endgültig fehlgeschlagen`);
-        continue;
-      }
-
-      assigned++;
-      toAssign--;
-      await delay(PER_PERSON_DELAY_MS);
-
-    } catch (e) {
-      console.warn("Fehler beim Assign POST", e);
     }
+
+    // 5) Fehlende auffüllen
+    if (assignedMatching < wanted) {
+      let need = wanted - assignedMatching;
+      for (const row of candidateRows) {
+        if (need <= 0) break;
+        const btn = row.querySelector("a.btn-success");
+        if (!btn) continue;
+
+        let ok = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const r = await fetch(btn.href, { method: "POST", headers, credentials: "same-origin" });
+            if (r.ok) { ok = true; break; }
+            await delay(r.status === 429 ? 1000 : 200);
+          } catch { await delay(200); }
+        }
+        if (ok) {
+          need--;
+          await delay(PER_PERSON_DELAY_MS);
+          doc = await fetchAssignDoc(vehicleId);
+          ({ cap } = parseCap(doc));
+          ({ boundMatchingRows, candidateRows } = collectRows(doc, identifier));
+          assignedMatching = boundMatchingRows.length;
+        }
+      }
+    }
+
+    return { id: vehicleId, assigned: assignedMatching, cap, error: false, message: "", wanted };
   }
-
-  return { id: vehicleId, assigned, cap };
-}
-
-
 
   function delay(ms) {
     return new Promise(r => setTimeout(r, ms));
   }
 
-  // --- getIdentifierByVehicleTypeId (aus BOS-Ernie Script, angepasst) ---
+  // --- Identifier-Mapping ---
   function getIdentifierByVehicleTypeId(vehicleTypeId) {
     switch (vehicleTypeId) {
       case 12: return "gw_messtechnik";
@@ -369,6 +373,5 @@ async function assignVehicle(vehicleId) {
       default: return null;
     }
   }
-  // --- Ende Identifier-Funktion ---
 
 })();
