@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Leitstelle Autobuy Extensions
 // @namespace    http://tampermonkey.net/
-// @version      1.0.1
+// @version      1.1.0
 // @description  Ausbauten automatisch kaufen – funktioniert sowohl in Einzelwachen als auch in Leitstellen
 // @author       Silberfighter & NilsPe
 // @include      https://www.leitstellenspiel.de/buildings/*
@@ -103,6 +103,43 @@
     return out;
   }
 
+  // Hilfsfunktionen zum Prüfen vorhandener Buttons
+  async function getAvailableExtensions(buildingId) {
+    const res = await fetch(`/buildings/${buildingId}`);
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+
+    // Ausbauten
+    const extensions = Array.from(doc.querySelectorAll(`a[href*="/extension/credits/"]`))
+      .map(a => {
+        const match = a.getAttribute("href").match(/credits\/(\d+)\?/);
+        return match ? parseInt(match[1], 10) : null;
+      })
+      .filter(id => id !== null);
+
+    // Spezialisierungen
+    const specs = Array.from(doc.querySelectorAll(`a[href*="/building_specializations"]`))
+      .map(a => {
+        if (a.href.includes("factory_fire_brigade")) return "factory_fire_brigade";
+        if (a.href.includes("airport")) return "airport";
+        if (a.href.includes("water_rescue")) return "water_rescue";
+        return null;
+      })
+      .filter(x => x);
+
+    // Lager
+    const storages = Array.from(doc.querySelectorAll(`a[href*="/storage_upgrade/credits/"]`))
+      .map(a => {
+        const href = a.getAttribute("href");
+        if (href.includes("initial_containers")) return "initial_containers";
+        const m = href.match(/additional_containers_(\d+)/);
+        return m ? `additional_containers_${m[1]}` : null;
+      })
+      .filter(x => x);
+
+    return { extensions, specs, storages };
+  }
+
   async function autobuyExtensionsForLeitstelle(leitstellenId, statusDiv) {
     const buildings = await getBuildingsOfLeitstelle(leitstellenId);
     const total = buildings.length;
@@ -131,8 +168,12 @@
   }
 
   async function extendBuilding(buildingId, config) {
+    const available = await getAvailableExtensions(buildingId);
+
+    // Ausbauten
     if (config.ausbauten) {
       for (const a of config.ausbauten) {
+        if (!available.extensions.includes(a)) continue; // schon gekauft → überspringen
         await $.post(`/buildings/${buildingId}/extension/credits/${a}?redirect_building_id=${buildingId}`, {
           "_method": "post",
           "authenticity_token": $("meta[name=csrf-token]").attr("content")
@@ -141,6 +182,7 @@
       }
     }
 
+    // Spezialisierung
     if (config.spezialisierung) {
       for (const s of config.spezialisierung) {
         let type = "";
@@ -148,6 +190,7 @@
         if (s == 1) type = "airport";
         if (s == 2) type = "water_rescue";
         if (!type) continue;
+        if (!available.specs.includes(type)) continue; // schon gesetzt → überspringen
 
         await $.post(`/building_specializations?building_id=${buildingId}&pay_with=credits&type=${type}`, {
           "_method": "post",
@@ -157,9 +200,12 @@
       }
     }
 
+    // Lager
     if (config.lager) {
       for (const l of config.lager) {
         let storage_name = (l==0) ? "initial_containers" : `additional_containers_${l}`;
+        if (!available.storages.includes(storage_name)) continue; // schon gebaut → überspringen
+
         await $.post(`/buildings/${buildingId}/storage_upgrade/credits/${storage_name}?redirect_building_id=${buildingId}`, {
           "_method": "post",
           "authenticity_token": $("meta[name=csrf-token]").attr("content")
