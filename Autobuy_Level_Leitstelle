@@ -1,0 +1,196 @@
+// ==UserScript==
+// @name         Leitstelle Autobuy Level
+// @namespace    http://tampermonkey.net/
+// @version      1.0.0
+// @description  Baut Gebäude automatisch auf definierte Stufe aus – einzeln oder über Leitstelle
+// @author       NilsPe
+// @include      https://www.leitstellenspiel.de/buildings/*
+// @grant        none
+// ==/UserScript==
+
+(async function () {
+
+  const DELAY_PER_BUILDING = 200;
+  const DELAY_AFTER_FETCH = 150;
+
+  // ----------------- KONFIG -----------------
+  const levelConfigurations = [
+    { buildingID: 0,
+     displayName: "Feuerwache",
+     stufe: 9
+    },
+
+    { buildingID: 6,
+     displayName: "Polizeiwache",
+     stufe: 5
+    },
+
+    { buildingID: 2,
+     displayName: "Rettungswache",
+     stufe: 3
+    },
+
+    // weitere Einträge hier...
+  ];
+  // ------------------------------------------
+
+  function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+  // liest die aktuelle Stufe direkt aus dem "Stufe: X"-Text
+  function getCurrentLevelFromDoc(doc) {
+    const stufeEl = Array.from(doc.querySelectorAll("dd"))
+      .find(dd => dd.innerText.includes("Stufe"));
+    if (!stufeEl) return 0;
+
+    const match = stufeEl.innerText.match(/Stufe:\s*(\d+)/);
+    return match ? parseInt(match[1], 10) : 0;
+  }
+
+  async function getBuildingsOfLeitstelle(leitstellenId) {
+    let out = [];
+    try {
+      const res = await fetch(`/buildings/${leitstellenId}/leitstelle-buildings`);
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const links = Array.from(doc.querySelectorAll("a[href^='/buildings/']"));
+      const seen = new Set();
+      out = links.map(a => {
+        const id = a.getAttribute("href").split("/buildings/")[1].split("/")[0];
+        const name = a.innerText.trim();
+        return { id, name, type: null, currentLevel: 0 };
+      }).filter(b => /^\d+$/.test(b.id))
+        .filter(b => (seen.has(b.id) ? false : (seen.add(b.id), true)));
+    } catch {}
+
+    for (const b of out) {
+      try {
+        const page = await fetch(`/buildings/${b.id}`);
+        const html = await page.text();
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const h1 = doc.querySelector("h1[building_type]");
+        if (h1) b.type = h1.getAttribute("building_type");
+        const h1Text = doc.querySelector("h1")?.textContent?.trim();
+        if (h1Text) b.name = h1Text;
+
+        b.currentLevel = getCurrentLevelFromDoc(doc);
+
+        await delay(DELAY_AFTER_FETCH);
+      } catch {}
+    }
+    return out;
+  }
+
+  async function upgradeBuildingLevel(buildingId, targetLevel) {
+    const url = `/buildings/${buildingId}/expand_do/credits?level=${targetLevel-1}`;
+    await $.post(url, {
+      "_method": "get",
+      "authenticity_token": $("meta[name=csrf-token]").attr("content")
+    });
+    console.log(`Gebäude ${buildingId} → Stufe ${targetLevel} ausgebaut`);
+    await delay(DELAY_PER_BUILDING);
+  }
+
+  async function autobuyLevelsForLeitstelle(leitstellenId, statusDiv) {
+    const buildings = await getBuildingsOfLeitstelle(leitstellenId);
+    const total = buildings.length;
+    let processed = 0;
+
+    for (const b of buildings) {
+      processed++;
+      const config = levelConfigurations.find(c => c.buildingID == Number(b.type));
+      if (!config) {
+        statusDiv.innerText = `(${processed}/${total}) Überspringe ${b.name}`;
+        continue;
+      }
+
+      if (b.currentLevel >= config.stufe) {
+        statusDiv.innerText = `(${processed}/${total}) ${b.name} hat schon Stufe ${b.currentLevel}`;
+        continue;
+      }
+
+      statusDiv.innerText = `(${processed}/${total}) ${b.name} → Ausbau auf Stufe ${config.stufe}`;
+      await upgradeBuildingLevel(b.id, config.stufe);
+    }
+
+    statusDiv.innerText = "✅ Stufen-Ausbau abgeschlossen!";
+  }
+
+  // ----------------- HAUPTLOGIK -----------------
+  const buildingId = window.location.href.replace("https://www.leitstellenspiel.de/buildings/", "");
+  const titleDiv = Array.from(document.getElementsByTagName("h1")).find(e => e.getAttribute("building_type") != undefined);
+  if (!titleDiv) return;
+  const buildingTypeID = Number(titleDiv.getAttribute("building_type"));
+
+  // Leitstelle
+  if (buildingTypeID === 7) {
+    let wrapperDIV = document.createElement("div");
+    wrapperDIV.innerText = "Leitstelle - Autobuy Level:";
+    wrapperDIV.style.padding = "15px 5px";
+    titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
+
+    let btn = document.createElement("a");
+    btn.className = "btn btn-success btn-xs";
+    btn.innerText = "Autobuy Level";
+    btn.style.margin = "5px";
+    wrapperDIV.appendChild(btn);
+
+    let statusDiv = document.createElement("div");
+    statusDiv.style.marginTop = "10px";
+    statusDiv.style.fontWeight = "bold";
+    wrapperDIV.appendChild(statusDiv);
+
+    btn.addEventListener("click", async function () {
+      statusDiv.innerText = "🔄 Lade Gebäudeliste…";
+      await autobuyLevelsForLeitstelle(buildingId, statusDiv);
+    });
+    return;
+  }
+
+  // Einzelne Wache
+  let wrapperDIV = document.createElement("div");
+  wrapperDIV.innerText = "Level-Configs:";
+  wrapperDIV.style.padding = "15px 5px";
+  titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
+
+  for (let i = 0; i < levelConfigurations.length; i++) {
+    if (levelConfigurations[i].buildingID == buildingTypeID) {
+      let btn = document.createElement("a");
+      btn.className = "btn btn-success btn-xs autoLevelBuy";
+      btn.setAttribute("config_id", i);
+      btn.innerText = levelConfigurations[i].displayName;
+      btn.style.margin = "5px";
+      wrapperDIV.appendChild(btn);
+    }
+  }
+
+  document.querySelectorAll(".autoLevelBuy").forEach(function (element) {
+    element.addEventListener("click", async function () {
+      const config = levelConfigurations[element.getAttribute("config_id")];
+      let statusDiv = document.createElement("div");
+      statusDiv.style.marginTop = "10px";
+      statusDiv.style.fontWeight = "bold";
+      wrapperDIV.appendChild(statusDiv);
+
+      // aktuelle Stufe direkt auslesen
+      const stufeEl = Array.from(document.querySelectorAll("dd"))
+        .find(dd => dd.innerText.includes("Stufe"));
+      let currentLevel = 0;
+      if (stufeEl) {
+        const match = stufeEl.innerText.match(/Stufe:\s*(\d+)/);
+        if (match) currentLevel = parseInt(match[1], 10);
+      }
+
+      if (currentLevel >= config.stufe) {
+        statusDiv.innerText = `✅ Bereits Stufe ${currentLevel}`;
+        return;
+      }
+
+      statusDiv.innerText = `🚀 Ausbau auf Stufe ${config.stufe} ...`;
+      await upgradeBuildingLevel(buildingId, config.stufe);
+      statusDiv.innerText = "✅ Fertig!";
+      await delay(500);
+      location.reload();
+    });
+  });
+
+})();
