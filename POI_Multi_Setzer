@@ -1,0 +1,257 @@
+// ==UserScript==
+// @name         POI -Multi-Setzer
+// @version      1.1
+// @description  Mehrere POIs vormerken, Vorschau auf der Karte, farbliche Legende, gefiltertes Dropdown und Hotkeys (V und S)
+// @author       NilsPe
+// @match        https://www.leitstellenspiel.de/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+  'use strict';
+
+  const poiColors = {
+    21: 'green', // Bauernhof
+    58: 'red', // Brücke
+    33: 'orange', // Flughafen groß - Terminal
+    27: 'blue', // Fluss
+    44: 'yellow', // Holzverarbeitung
+    47: 'purple', // Klärwerk
+    51: 'cyan', // Kompostieranlage
+    13: 'magenta', // Museum
+    23: 'brown', // Schwimmbad
+    1: 'pink', // See
+    10: 'gray' // Supermarkt
+  };
+
+  const poiNames = {
+    21: 'Bauernhof',
+    58: 'Brücke',
+    33: 'Flughafen (groß): Terminal',
+    27: 'Fluss',
+    44: 'Holzverarbeitung',
+    47: 'Klärwerk',
+    51: 'Kompostieranlage',
+    13: 'Museum',
+    23: 'Schwimmbad',
+    1: 'See',
+    10: 'Supermarkt (Groß)'
+  };
+
+  let poiList = [];
+  let previewMarkers = [];
+  let statusBox = null;
+  let legendBox = null;
+
+  async function savePoi(poi) {
+    const authToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    const formData = new URLSearchParams();
+    formData.append('utf8', '✓');
+    formData.append('mission_position[poi_type]', poi.poi_type);
+    formData.append('mission_position[latitude]', poi.latitude);
+    formData.append('mission_position[longitude]', poi.longitude);
+    formData.append('commit', 'Speichern');
+
+    const response = await fetch('/mission_positions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-CSRF-Token': authToken,
+      },
+      body: formData.toString(),
+      credentials: 'include'
+    });
+
+    return response.ok;
+  }
+
+  function addPreviewMarker(lat, lon, poiType) {
+    if (typeof L === 'undefined' || !window.map) return;
+
+    const color = poiColors[poiType] || 'blue';
+
+    const marker = L.circleMarker([lat, lon], {
+      radius: 6,
+      color: color,
+      fillColor: color,
+      fillOpacity: 0.7
+    }).addTo(window.map);
+
+    previewMarkers.push(marker);
+  }
+
+  function updateStatus(text) {
+    if (!statusBox) return;
+    statusBox.innerHTML = text || `<b>Vorgemerkt:</b> ${poiList.length} POIs`;
+    renderLegend();
+  }
+
+  function renderLegend() {
+    if (!legendBox) return;
+    legendBox.innerHTML = '<b>Legende:</b><br>';
+
+    const counts = {};
+    for (const poi of poiList) {
+      counts[poi.poi_type] = (counts[poi.poi_type] || 0) + 1;
+    }
+
+    const entries = Object.entries(poiColors)
+      .sort((a, b) => (poiNames[a[0]] || '').localeCompare(poiNames[b[0]] || ''));
+
+    for (const [type, color] of entries) {
+      const name = poiNames[type] || `Typ ${type}`;
+      const count = counts[type] ? ` (${counts[type]})` : '';
+      legendBox.innerHTML +=
+        `<div style="display:flex;align-items:center;gap:5px;">
+           <span style="display:inline-block;width:15px;height:15px;background:${color};border:1px solid #000"></span>
+           ${name}${count}
+         </div>`;
+    }
+  }
+
+  function filterPoiDropdown() {
+    const select = document.querySelector('#mission_position_poi_type');
+    if (!select) return;
+
+    select.innerHTML = '';
+
+    const entries = Object.entries(poiColors)
+      .sort((a, b) => (poiNames[a[0]] || '').localeCompare(poiNames[b[0]] || ''));
+
+    for (const [type] of entries) {
+      const opt = document.createElement('option');
+      opt.value = type;
+      opt.textContent = poiNames[type] || `Typ ${type}`;
+      select.appendChild(opt);
+    }
+  }
+
+  function resetPois() {
+    poiList = [];
+    previewMarkers.forEach(m => window.map.removeLayer(m));
+    previewMarkers = [];
+    updateStatus();
+  }
+
+  function setButtonsDisabled(container, disabled) {
+    container.querySelectorAll('button').forEach(btn => {
+      btn.disabled = disabled;
+    });
+  }
+
+  function hideSaveButton() {
+    // Nur ausblenden, wenn wirklich auf der POI-Seite
+    const dropdown = document.querySelector('#mission_position_poi_type');
+    if (!dropdown) return;
+
+    const saveBtn = document.querySelector('input.btn.btn-success[name="commit"]');
+    if (saveBtn) saveBtn.style.display = 'none';
+  }
+
+  function addButtons() {
+    const saveBtn = document.querySelector('input.btn.btn-success[name="commit"]');
+    if (!saveBtn || document.getElementById('batchSaveBtn')) return;
+
+    // Prüfen, ob wir auf der POI-Seite sind
+    const dropdown = document.querySelector('#mission_position_poi_type');
+    if (!dropdown) return;
+
+    const container = document.createElement('div');
+    container.style.marginTop = '10px';
+
+    const tempBtn = document.createElement('button');
+    tempBtn.type = 'button';
+    tempBtn.className = 'btn btn-info';
+    tempBtn.textContent = 'POI vormerken';
+
+    const batchBtn = document.createElement('button');
+    batchBtn.type = 'button';
+    batchBtn.className = 'btn btn-success';
+    batchBtn.id = 'batchSaveBtn';
+    batchBtn.style.marginLeft = '10px';
+    batchBtn.textContent = 'Speichern';
+
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'btn btn-danger';
+    resetBtn.style.marginLeft = '10px';
+    resetBtn.textContent = 'Zurücksetzen';
+
+    statusBox = document.createElement('div');
+    statusBox.style.marginTop = '10px';
+    statusBox.style.fontSize = '0.9em';
+    statusBox.style.color = '#fff';
+    updateStatus();
+
+    legendBox = document.createElement('div');
+    legendBox.style.marginTop = '10px';
+    legendBox.style.fontSize = '0.9em';
+    legendBox.style.color = '#fff';
+
+    container.append(tempBtn, batchBtn, resetBtn, statusBox, legendBox);
+    saveBtn.parentNode.appendChild(container);
+
+    renderLegend();
+    filterPoiDropdown();
+    hideSaveButton();
+
+    // Vormerken
+    function vormerken() {
+      const poiType = document.querySelector('#mission_position_poi_type')?.value;
+      const lat = document.querySelector('#mission_position_latitude')?.value;
+      const lon = document.querySelector('#mission_position_longitude')?.value;
+
+      if (!poiType || !lat || !lon) {
+        alert('POI-Daten unvollständig!');
+        return;
+      }
+
+      poiList.push({ poi_type: poiType, latitude: lat, longitude: lon });
+      addPreviewMarker(parseFloat(lat), parseFloat(lon), parseInt(poiType));
+      updateStatus();
+    }
+
+    // Speichern
+    async function speichern() {
+      if (poiList.length === 0) {
+        alert('Keine POIs vorgemerkt!');
+        return;
+      }
+
+      setButtonsDisabled(container, true);
+
+      const total = poiList.length;
+      for (let i = 0; i < total; i++) {
+        const poi = poiList[i];
+        await savePoi(poi);
+        updateStatus(`<b>Gespeichert:</b> ${i+1}/${total}`);
+        await new Promise(r => setTimeout(r, 200));
+      }
+
+      alert(`Fertig. Erfolgreich: ${total}/${total}`);
+      poiList = [];
+      updateStatus();
+      location.reload();
+    }
+
+    // Events
+    tempBtn.addEventListener('click', vormerken);
+    batchBtn.addEventListener('click', speichern);
+    resetBtn.addEventListener('click', resetPois);
+
+    // Hotkeys
+    document.addEventListener('keydown', (e) => {
+      if (e.key.toLowerCase() === 'v' && !e.repeat) {
+        vormerken();
+      }
+      if (e.key.toLowerCase() === 's' && !e.repeat) {
+        speichern();
+      }
+    });
+  }
+
+  setInterval(() => {
+    addButtons();
+    hideSaveButton();
+  }, 2000);
+})();
