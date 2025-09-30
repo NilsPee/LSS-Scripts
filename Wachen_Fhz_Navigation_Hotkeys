@@ -1,0 +1,103 @@
+// ==UserScript==
+// @name         Wachen/Fhz Navigation Hotkeys
+// @namespace    bos-ernie.leitstellenspiel.de
+// @version      1.3.0
+// @license      BSD-3-Clause
+// @author       BOS-Ernie & NilsPe
+// @description  Hotkeys zum Navigieren zwischen Gebäuden und Fahrzeugen. Deaktiviert in Eingabefeldern.
+// @match        https://www.leitstellenspiel.de/buildings/*
+// @match        https://polizei.leitstellenspiel.de/buildings/*
+// @match        https://www.leitstellenspiel.de/schoolings/*
+// @match        https://polizei.leitstellenspiel.de/schoolings/*
+// @match        https://www.leitstellenspiel.de/vehicles/*
+// @match        https://www.leitstellenspiel.de/Vehicles/*
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=leitstellenspiel.de
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  // ---- Helpers -------------------------------------------------------------
+  const isTypingContext = (el) => {
+    if (!el) return false;
+    if (el.closest('input, textarea, select, [contenteditable="true"]')) return true;
+    const role = el.getAttribute && el.getAttribute('role');
+    return role && ['textbox','combobox','searchbox','spinbutton'].includes(role);
+  };
+
+  const inBuildings = () => /\/buildings\//i.test(location.pathname);
+  const inVehicles  = () => /\/vehicles\//i.test(location.pathname);
+
+  // Gebäude: robust für 2- und 3-Button-Layout
+  const findBuildingNav = () => {
+    const nav = document.getElementById("building-navigation-container");
+    if (!nav) return { prev:null, next:null, middle:null };
+
+    const successButtons = nav.querySelectorAll('a.btn-success[href*="/buildings/"]');
+    const prev = successButtons[0] || null;
+    const next = successButtons[1] || null;
+
+    const middle = nav.querySelector(
+      'a.btn-default[href*="/buildings/"], a.btn-primary[href*="/buildings/"]'
+    );
+
+    return { prev, next, middle };
+  };
+
+  // Fahrzeuge: linke/rechte Pfeile; nur klickbar, wenn grün (btn-success) und echtes href
+  const findVehicleNav = () => {
+    const leftSpan  = document.querySelector('a.btn span.glyphicon-arrow-left');
+    const rightSpan = document.querySelector('a.btn span.glyphicon-arrow-right');
+    const leftA  = leftSpan  ? leftSpan.closest('a')  : null;
+    const rightA = rightSpan ? rightSpan.closest('a') : null;
+
+    const isClickable = (a) =>
+      a && a.classList.contains('btn-success') &&
+      a.getAttribute('href') && a.getAttribute('href') !== '#';
+
+    return {
+      prev: isClickable(leftA)  ? leftA  : null,
+      next: isClickable(rightA) ? rightA : null
+    };
+  };
+
+  // ---- Key handling --------------------------------------------------------
+  document.addEventListener("keydown", function (event) {
+    const key = (event.key || '').toLowerCase();
+
+    // Modifiers/Repeats ignorieren
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    if (event.repeat) return;
+
+    // In Eingabefeldern keine Hotkeys
+    if (isTypingContext(document.activeElement)) return;
+
+    let prev = null, next = null, middle = null;
+
+    if (inBuildings()) {
+      const b = findBuildingNav();
+      prev = b.prev; next = b.next; middle = b.middle;
+    } else if (inVehicles()) {
+      const v = findVehicleNav();
+      prev = v.prev; next = v.next;
+    } else {
+      return; // außerhalb relevanter Seiten nichts tun
+    }
+
+    // akzeptiere a/d sowie Pfeiltasten ← →
+    const isPrevKey = key === "a" || key === "arrowleft";
+    const isNextKey = key === "d" || key === "arrowright";
+
+    if (isPrevKey && prev) { prev.click(); return; }
+    if (isNextKey && next) { next.click(); return; }
+
+    // W = mittlerer Link (nur auf Gebäudeseiten sinnvoll)
+    if (key === "w" && middle && inBuildings()) { middle.click(); return; }
+
+    // S = Fahrzeuge hinzufügen (nur auf Gebäudeseiten)
+    if (key === "s" && inBuildings()) {
+      window.open(location.pathname + "/vehicles/new", "_self");
+      return;
+    }
+  }, { capture: true });
+})();
