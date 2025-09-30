@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         LS Button for assigning people
+// @name         Leitstelle Button for assigning people
 // @namespace    http://tampermonkey.net/
-// @version      1.7
+// @version      1.7.1
 // @description  Weist mit einem Klick allen Fahrzeugen automatisch passendes Personal zu, nur mit richtiger Ausbildung und mit Vorgabe der Menge. Fahrzeuge ohne Ausbildung werden direkt übersprungen und Überhänge korrigiert.
 // @author       Kruemmel & NilsPe
 // @match        https://www.leitstellenspiel.de/buildings/*
@@ -84,6 +84,8 @@
     163: 1,
     164: 1,
     165: 1,
+    171: 4,
+    173: 5,
   };
 
   function addButtonIfMissing() {
@@ -370,6 +372,10 @@
       case 163: return "railway_fire";
       case 164: return "railway_fire";
       case 165: return "police_speaker_operator";
+      case 171: return "disaster_response_technology";
+      case 172: return "disaster_response_technology";
+      case 173: return "disaster_response_technology";
+      case 175: return "disaster_response_technology";
       default: return null;
     }
   }
