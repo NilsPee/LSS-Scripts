@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         LS De-/Activate Extensions
+// @name         Leitstelle De-/Activate Extensions
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.4.1
 // @description  (De)aktiviert Erweiterungen Leitstellenweise, bearbeitet nur Erweiterungen die in config konfiguriert wurden
 // @author       Silberfighter & NilsPe
 // @match        https://www.leitstellenspiel.de/buildings*
@@ -77,7 +77,7 @@
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = cfg.label;
-      btn.className = `btn btn-${cfg.color}`;
+      btn.className = `btn btn-${cfg.color} btn-xs`;
       btn.style.marginRight = '8px';
 
       const status = document.createElement('span');
