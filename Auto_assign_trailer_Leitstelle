@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         LS Auto-Assign Trailer
+// @name         Leitstelle Auto-Assign Trailer
 // @namespace    http://tampermonkey.net/
 // @version      1.0
 // @description  Weist im Fahrzeug-Tab der Leitstelle Anhänger passenden Zugfahrzeugen zu
@@ -160,9 +160,9 @@
 
     let btn = document.createElement('button');
     btn.id = 'autoAssignBtn';
-    btn.innerText = 'Auto-Assign Trailer';
+    btn.innerText = 'Anhänger zuweisen';
     btn.style.margin = '10px';
-    btn.className = 'btn btn-success';
+    btn.className = 'btn btn-success btn-xs';
     btn.onclick = autoAssignTrailers;
 
     let status = document.createElement('div');
@@ -170,7 +170,7 @@
     status.style.margin = '5px';
     status.style.fontWeight = 'bold';
     status.style.color = 'white'; // weiße Schrift
-    status.innerText = 'Bereit';
+    status.innerText = '';
 
     table.before(btn);
     btn.after(status);
