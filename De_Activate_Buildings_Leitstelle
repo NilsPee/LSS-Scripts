@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Leitstelle De-/Activate buildings
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.0.1
 // @description  Aktiviert oder deaktiviert Gebäude in der Leitstellen in dem Gebäudetab durch Auslesen der Gebäudeseiten (Status aus Label "Einsatzbereit" / "Nicht einsatzbereit").
 // @author       Silberfighter & NilsPe
 // @match        https://www.leitstellenspiel.de/buildings*
@@ -107,103 +107,114 @@ async function readBuildingInfo(buildingId) {
   // ===========================
   // Buttons hinzufügen
   // ===========================
-  function addButtonsIfMissing() {
-    const tab = document.querySelector("#tab_buildings");
-    if (!tab) return;
+function addButtonsIfMissing() {
+  const tab = document.querySelector("#tab_buildings");
+  if (!tab) return;
 
-    const table = tab.querySelector("table");
-    if (!table) return;
+  const table = tab.querySelector("table");
+  if (!table) return;
 
-    if (tab.querySelector(".building-control-container")) return;
+  if (tab.querySelector(".building-control-container")) return;
 
-    const box = document.createElement("div");
-    box.className = "building-control-container";
-    box.style.margin = "10px 0";
+  // --- Container für beide Buttons ---
+  const box = document.createElement("div");
+  box.className = "building-control-container";
+  box.style.display = "flex";
+  box.style.flexWrap = "wrap";
+  box.style.gap = "1px";
+  box.style.alignItems = "center";
+  box.style.margin = "10px 0";
 
-    [
-      { label: "Alle aktivieren", wantEnabled: true, color: "success" },
-      { label: "Alle deaktivieren", wantEnabled: false, color: "danger" },
-    ].forEach(cfg => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = cfg.label;
-      btn.className = `btn btn-${cfg.color}`;
-      btn.style.marginRight = "8px";
+  // --- Button-Konfiguration ---
+  [
+    { label: "Alle aktivieren", wantEnabled: true, color: "success" },
+    { label: "Alle deaktivieren", wantEnabled: false, color: "danger" },
+  ].forEach(cfg => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = cfg.label;
+    btn.className = `btn btn-${cfg.color} btn-xs`;
 
-      const status = document.createElement("span");
-      status.style.marginLeft = "6px";
-      status.style.fontWeight = "bold";
+    const status = document.createElement("span");
+    status.style.fontWeight = "bold";
+    status.style.color = "white";
+    status.style.marginLeft = "6px";
 
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        status.textContent = "Lese Gebäudeliste …";
-        status.style.color = "white";
+    // --- Klick-Handler ---
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      status.textContent = "Lese Gebäudeliste …";
+      status.style.color = "white";
 
-        // IDs der Wachen aus der Tabelle auslesen
-        const ids = Array.from(document.querySelectorAll("#tab_buildings tbody tr"))
-          .map(r => {
-            const a = r.querySelector('a[href^="/buildings/"]');
-            const m = a && a.getAttribute("href").match(/\/buildings\/(\d+)/);
-            return m ? parseInt(m[1], 10) : null;
-          })
-          .filter(Boolean);
+      const ids = Array.from(document.querySelectorAll("#tab_buildings tbody tr"))
+        .map(r => {
+          const a = r.querySelector('a[href^="/buildings/"]');
+          const m = a && a.getAttribute("href").match(/\/buildings\/(\d+)/);
+          return m ? parseInt(m[1], 10) : null;
+        })
+        .filter(Boolean);
 
-        if (ids.length === 0) {
-          status.textContent = "Keine Gebäude gefunden";
-          status.style.color = "red";
-          btn.disabled = false;
-          return;
-        }
-
-        let done = 0, changed = 0, total = ids.length;
-        status.textContent = `0 / ${total} … läuft (geändert: 0)`;
-
-        let idx = 0;
-        async function worker() {
-          while (idx < ids.length) {
-            const id = ids[idx++];
-            const info = await readBuildingInfo(id);
-            if (!info) {
-              done++;
-              continue;
-            }
-
-            // Nur gewünschte Typen
-            if (allowedTypes.length && !allowedTypes.includes(info.typeId)) {
-              done++;
-              continue;
-            }
-
-            // Prüfen ob geändert werden muss
-            const shouldToggle =
-              (cfg.wantEnabled && !info.isActive) ||
-              (!cfg.wantEnabled && info.isActive);
-
-            if (shouldToggle) {
-              const ok = await toggleBuilding(info.toggleHref);
-              if (ok) changed++;
-            }
-
-            done++;
-            status.textContent = `${done} / ${total} … läuft (geändert: ${changed})`;
-            await delay(PER_REQUEST_DELAY_MS);
-          }
-        }
-
-        await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
-
-        status.textContent = `✔ Fertig (${changed} geändert von ${total})`;
-        status.style.color = "green";
+      if (ids.length === 0) {
+        status.textContent = "Keine Gebäude gefunden";
+        status.style.color = "red";
         btn.disabled = false;
-      });
+        return;
+      }
 
-      box.appendChild(btn);
-      box.appendChild(status);
-      box.appendChild(document.createElement("br"));
+      let done = 0, changed = 0, total = ids.length;
+      status.textContent = `0 / ${total} … läuft (geändert: 0)`;
+
+      let idx = 0;
+      async function worker() {
+        while (idx < ids.length) {
+          const id = ids[idx++];
+          const info = await readBuildingInfo(id);
+          if (!info) {
+            done++;
+            continue;
+          }
+
+          if (allowedTypes.length && !allowedTypes.includes(info.typeId)) {
+            done++;
+            continue;
+          }
+
+          const shouldToggle =
+            (cfg.wantEnabled && !info.isActive) ||
+            (!cfg.wantEnabled && info.isActive);
+
+          if (shouldToggle) {
+            const ok = await toggleBuilding(info.toggleHref);
+            if (ok) changed++;
+          }
+
+          done++;
+          status.textContent = `${done} / ${total} … läuft (geändert: ${changed})`;
+          await delay(PER_REQUEST_DELAY_MS);
+        }
+      }
+
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+
+      status.textContent = `✔ Fertig (${changed} geändert von ${total})`;
+      status.style.color = "green";
+      btn.disabled = false;
     });
 
-    table.parentNode.insertBefore(box, table);
-  }
+    // --- Button + Status nebeneinander ---
+    const group = document.createElement("div");
+    group.style.display = "flex";
+    group.style.alignItems = "center";
+    group.style.gap = "6px";
+    group.appendChild(btn);
+    group.appendChild(status);
+
+    box.appendChild(group);
+  });
+
+  table.parentNode.insertBefore(box, table);
+}
+
 
   // Script initialisieren
   setInterval(addButtonsIfMissing, 1000);
