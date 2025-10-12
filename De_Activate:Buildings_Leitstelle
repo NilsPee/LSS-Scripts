@@ -1,0 +1,210 @@
+// ==UserScript==
+// @name         Leitstelle De-/Activate buildings
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Aktiviert oder deaktiviert Gebäude in der Leitstellen in dem Gebäudetab durch Auslesen der Gebäudeseiten (Status aus Label "Einsatzbereit" / "Nicht einsatzbereit").
+// @author       Silberfighter & NilsPe
+// @match        https://www.leitstellenspiel.de/buildings*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  // ===========================
+  // Konfiguration
+  // ===========================
+
+  const allowedTypes = [
+    0, //Feuerwache
+    2, //Rettungswache
+    6, //Polizeiwache
+    9, //THW-Ortsverband
+    11, //Bereitschaftspolizei
+    12, //SEG
+    13, //Polizeihubschrauber
+    15, //Wasserrettung
+    18, //Feuerwache kl
+    19, //Polizeiwache kl
+    20, //Rettungswache kl
+  ];
+
+  const CONCURRENCY = 3; // Wie viele Gebäude gleichzeitig geprüft werden
+  const PER_REQUEST_DELAY_MS = 100; // Pause zwischen Requests
+
+  const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // ===========================
+  // Status auf Gebäudeseite auslesen
+  // ===========================
+async function readBuildingInfo(buildingId) {
+  try {
+    const url = `/buildings/${buildingId}`;
+    const res = await fetch(url, { credentials: "same-origin" });
+    if (!res.ok) {
+      console.warn(`❌ Fehler beim Laden von Gebäude ${buildingId}`);
+      return null;
+    }
+
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+
+    // Status und Umschaltlink
+    const label = doc.querySelector("span.label");
+    const labelText = label?.textContent?.trim() || "—";
+    const labelClass = label?.className || "—";
+    const toggleA = doc.querySelector('a.btn[href*="/active"]');
+    const toggleHref = toggleA?.getAttribute("href");
+
+    // Gebäudetyp aus Überschrift extrahieren (z. B. "Feuerwache", "THW-Ortsverband" …)
+    const title = doc.querySelector("h1")?.textContent?.trim() || "";
+    const typeName = title.split(" ")[0] || "";
+    const typeMap = {
+      "Feuerwache": 0,
+      "Rettungswache": 2,
+      "Polizeiwache": 6,
+      "THW-Ortsverband": 9,
+      "Bereitschaftspolizei": 11,
+      "Wasserrettung": 15,
+    };
+    const typeId = typeMap[typeName] ?? -1;
+
+    console.log(
+      `📄 [${buildingId}] label="${labelText}" class="${labelClass}" typeName="${typeName}" typeId=${typeId} href=${toggleHref}`
+    );
+
+    if (!label || !toggleA) {
+      console.warn(`⚠️ Kein Status oder Button gefunden bei Gebäude ${buildingId}`);
+      return null;
+    }
+
+    const isActive = labelClass.includes("label-success");
+    return { isActive, typeId, toggleHref };
+  } catch (e) {
+    console.error("❗ Lesefehler bei Gebäude", buildingId, e);
+    return null;
+  }
+}
+
+
+  // ===========================
+  // Umschalten (GET-Request auf /active)
+  // ===========================
+  async function toggleBuilding(toggleHref) {
+    try {
+      const res = await fetch(toggleHref, {
+        method: "GET",
+        credentials: "same-origin",
+        headers: { "x-requested-with": "XMLHttpRequest" },
+      });
+      return res.ok;
+    } catch (e) {
+      console.warn("Fehler beim Umschalten", toggleHref, e);
+      return false;
+    }
+  }
+
+  // ===========================
+  // Buttons hinzufügen
+  // ===========================
+  function addButtonsIfMissing() {
+    const tab = document.querySelector("#tab_buildings");
+    if (!tab) return;
+
+    const table = tab.querySelector("table");
+    if (!table) return;
+
+    if (tab.querySelector(".building-control-container")) return;
+
+    const box = document.createElement("div");
+    box.className = "building-control-container";
+    box.style.margin = "10px 0";
+
+    [
+      { label: "Alle aktivieren", wantEnabled: true, color: "success" },
+      { label: "Alle deaktivieren", wantEnabled: false, color: "danger" },
+    ].forEach(cfg => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = cfg.label;
+      btn.className = `btn btn-${cfg.color}`;
+      btn.style.marginRight = "8px";
+
+      const status = document.createElement("span");
+      status.style.marginLeft = "6px";
+      status.style.fontWeight = "bold";
+
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        status.textContent = "Lese Gebäudeliste …";
+        status.style.color = "white";
+
+        // IDs der Wachen aus der Tabelle auslesen
+        const ids = Array.from(document.querySelectorAll("#tab_buildings tbody tr"))
+          .map(r => {
+            const a = r.querySelector('a[href^="/buildings/"]');
+            const m = a && a.getAttribute("href").match(/\/buildings\/(\d+)/);
+            return m ? parseInt(m[1], 10) : null;
+          })
+          .filter(Boolean);
+
+        if (ids.length === 0) {
+          status.textContent = "Keine Gebäude gefunden";
+          status.style.color = "red";
+          btn.disabled = false;
+          return;
+        }
+
+        let done = 0, changed = 0, total = ids.length;
+        status.textContent = `0 / ${total} … läuft (geändert: 0)`;
+
+        let idx = 0;
+        async function worker() {
+          while (idx < ids.length) {
+            const id = ids[idx++];
+            const info = await readBuildingInfo(id);
+            if (!info) {
+              done++;
+              continue;
+            }
+
+            // Nur gewünschte Typen
+            if (allowedTypes.length && !allowedTypes.includes(info.typeId)) {
+              done++;
+              continue;
+            }
+
+            // Prüfen ob geändert werden muss
+            const shouldToggle =
+              (cfg.wantEnabled && !info.isActive) ||
+              (!cfg.wantEnabled && info.isActive);
+
+            if (shouldToggle) {
+              const ok = await toggleBuilding(info.toggleHref);
+              if (ok) changed++;
+            }
+
+            done++;
+            status.textContent = `${done} / ${total} … läuft (geändert: ${changed})`;
+            await delay(PER_REQUEST_DELAY_MS);
+          }
+        }
+
+        await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+
+        status.textContent = `✔ Fertig (${changed} geändert von ${total})`;
+        status.style.color = "green";
+        btn.disabled = false;
+      });
+
+      box.appendChild(btn);
+      box.appendChild(status);
+      box.appendChild(document.createElement("br"));
+    });
+
+    table.parentNode.insertBefore(box, table);
+  }
+
+  // Script initialisieren
+  setInterval(addButtonsIfMissing, 1000);
+})();
