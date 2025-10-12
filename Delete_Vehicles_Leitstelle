@@ -272,7 +272,7 @@
         status.id = UI.status;
         status.style.marginLeft = '8px';
         status.style.fontWeight = 'bold';
-        status.textContent = 'Bereit';
+        status.textContent = '';
 
         container.appendChild(btnPrev);
         container.appendChild(btnDel);
