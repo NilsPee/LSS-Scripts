@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Leitstelle Autobuy Extensions
 // @namespace    http://tampermonkey.net/
-// @version      1.1.0
+// @version      1.2.0
 // @description  Ausbauten automatisch kaufen – funktioniert sowohl in Einzelwachen als auch in Leitstellen
 // @author       Silberfighter & NilsPe
 // @include      https://www.leitstellenspiel.de/buildings/*
@@ -14,57 +14,66 @@
   //----------------------------------------------
   // EINSTELLUNGEN
   //----------------------------------------------
-  const DELAY_PER_ACTION = 150; // Pause zwischen Kaufaktionen
-  const DELAY_PER_BUILDING = 200; // Pause zwischen Gebäuden
+  const DELAY_PER_ACTION = 120; // Pause zwischen Kaufaktionen
+  const DELAY_PER_BUILDING = 100; // Pause zwischen Gebäuden
   const DELAY_AFTER_FETCH = 100; // Pause nach Laden von Gebäuden
 
   //----------------------------------------------
   // KONFIGURATION
   //----------------------------------------------
   const extensionsConfigurations = [
-    {
-      buildingID: 0,
-      displayName: "Standardwache",
-      ausbauten:[0,1,2,3,4,5],
-      spezialisierung:[0],
-      lager:[0],
-    },
-    {
-      buildingID: 9,
-      displayName: "THW-Ortsverband",
-      ausbauten:[0,1,2,4,5,6,8,9,13],
-      spezialisierung:[0],
-      lager:[0],
-    },
-    {
-      buildingID: 11,
-      displayName: "Bereitschaftspolizei",
-      ausbauten:[0,1],
-      spezialisierung:[0],
-      lager:[0],
-    },
-    {
-      buildingID: 21,
-      displayName: "Rettungshunde",
-      ausbauten:[]
-    },
-    {
-      buildingID: 16,
-      displayName: "Polizeizellen",
-      ausbauten:[0,1,2,3,4,5,6,7,8,9]
-    },
+//    {
+//      buildingID: 0,
+//      displayName: "Standardwache",
+//      ausbauten:[0,1,2,3,4,5],
+//      spezialisierung:[0],
+//      lager:[0],
+//    },
+//    {
+//      buildingID: 9,
+//      displayName: "THW-Ortsverband",
+//      ausbauten:[0,1,2,4,5,6,8,9,13],
+//      spezialisierung:[0],
+//      lager:[0],
+//    },
+//    {
+//      buildingID: 11,
+//      displayName: "Bereitschaftspolizei",
+//      ausbauten:[0,1],
+//      spezialisierung:[0],
+//      lager:[0],
+//    },
+//    {
+//      buildingID: 21,
+//      displayName: "Rettungshunde",
+//      ausbauten:[]
+//    },
+//    {
+//      buildingID: 16,
+//      displayName: "Polizeizellen",
+//      ausbauten:[0,1,2,3,4,5,6,7,8,9]
+//    },
     {
       buildingID: 6,
       displayName: "Polizeiwache",
-      ausbauten:[]
+      ausbauten:[12,11,0,1,2,3,4,5,6,7,8,9]
     },
-    {
-      buildingID: 12,
-      displayName: "Schnelleinsatzgruppe",
-      ausbauten:[3]
-    },
+//    {
+//      buildingID: 12,
+//      displayName: "Schnelleinsatzgruppe",
+//      ausbauten:[3]
+//    },
+//    {
+//      buildingID: 4,
+//      displayName: "Krankenhaus",
+//      ausbauten:[0,1,2,3,4,5,6,7,8]
+//    },
+//    {
+//      buildingID: 8,
+//      displayName: "Polizeischule",
+//      ausbauten:[0,1,2]
+//    },
   ];
-
   const buildingsIDToIgnore = [4,1,3,8,10];
 
   //----------------------------------------------
@@ -167,53 +176,67 @@
     statusDiv.innerText = "✅ Autobuy Extensions abgeschlossen!";
   }
 
-  async function extendBuilding(buildingId, config) {
-    const available = await getAvailableExtensions(buildingId);
+async function extendBuilding(buildingId, config) {
+  // --- AUSBAUTEN: vor JEDEM Kauf neu prüfen, was gerade verfügbar ist ---
+  if (config.ausbauten) {
+    for (const a of config.ausbauten) {
+      // aktuelles Angebot laden
+      let available = await getAvailableExtensions(buildingId);
 
-    // Ausbauten
-    if (config.ausbauten) {
-      for (const a of config.ausbauten) {
-        if (!available.extensions.includes(a)) continue; // schon gekauft → überspringen
+      // wenn diese Ausbau-ID jetzt kaufbar ist -> kaufen
+      if (available.extensions.includes(a)) {
         await $.post(`/buildings/${buildingId}/extension/credits/${a}?redirect_building_id=${buildingId}`, {
           "_method": "post",
           "authenticity_token": $("meta[name=csrf-token]").attr("content")
         });
         await delay(DELAY_PER_ACTION);
+
+        // nach dem Kauf erneut laden, damit z.B. die NÄCHSTE Zelle sichtbar wird
+        available = await getAvailableExtensions(buildingId);
       }
-    }
-
-    // Spezialisierung
-    if (config.spezialisierung) {
-      for (const s of config.spezialisierung) {
-        let type = "";
-        if (s == 0) type = "factory_fire_brigade";
-        if (s == 1) type = "airport";
-        if (s == 2) type = "water_rescue";
-        if (!type) continue;
-        if (!available.specs.includes(type)) continue; // schon gesetzt → überspringen
-
-        await $.post(`/building_specializations?building_id=${buildingId}&pay_with=credits&type=${type}`, {
-          "_method": "post",
-          "authenticity_token": $("meta[name=csrf-token]").attr("content")
-        });
-        await delay(DELAY_PER_ACTION);
-      }
-    }
-
-    // Lager
-    if (config.lager) {
-      for (const l of config.lager) {
-        let storage_name = (l==0) ? "initial_containers" : `additional_containers_${l}`;
-        if (!available.storages.includes(storage_name)) continue; // schon gebaut → überspringen
-
-        await $.post(`/buildings/${buildingId}/storage_upgrade/credits/${storage_name}?redirect_building_id=${buildingId}`, {
-          "_method": "post",
-          "authenticity_token": $("meta[name=csrf-token]").attr("content")
-        });
-        await delay(DELAY_PER_ACTION);
-      }
+      // falls nicht verfügbar, einfach weiter (bereits gebaut/noch gesperrt)
     }
   }
+
+  // --- SPEZIALISIERUNG: einmalig, aber trotzdem vor Kauf prüfen ---
+  if (config.spezialisierung) {
+    for (const s of config.spezialisierung) {
+      let type = "";
+      if (s == 0) type = "factory_fire_brigade";
+      if (s == 1) type = "airport";
+      if (s == 2) type = "water_rescue";
+      if (!type) continue;
+
+      // frisch prüfen
+      const availNow = await getAvailableExtensions(buildingId);
+      if (!availNow.specs.includes(type)) continue; // schon gesetzt -> skip
+
+      await $.post(`/building_specializations?building_id=${buildingId}&pay_with=credits&type=${type}`, {
+        "_method": "post",
+        "authenticity_token": $("meta[name=csrf-token]").attr("content")
+      });
+      await delay(DELAY_PER_ACTION);
+    }
+  }
+
+  // --- LAGER: wie oben, vor Kauf prüfen (wegen stufenweiser Freischaltung) ---
+  if (config.lager) {
+    for (const l of config.lager) {
+      const storage_name = (l==0) ? "initial_containers" : `additional_containers_${l}`;
+
+      // frisch prüfen
+      const availNow = await getAvailableExtensions(buildingId);
+      if (!availNow.storages.includes(storage_name)) continue; // schon gebaut -> skip
+
+      await $.post(`/buildings/${buildingId}/storage_upgrade/credits/${storage_name}?redirect_building_id=${buildingId}`, {
+        "_method": "post",
+        "authenticity_token": $("meta[name=csrf-token]").attr("content")
+      });
+      await delay(DELAY_PER_ACTION);
+    }
+  }
+}
+
 
   //----------------------------------------------
   // HAUPTLOGIK
