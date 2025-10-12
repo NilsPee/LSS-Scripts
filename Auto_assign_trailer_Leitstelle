@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Leitstelle Auto-Assign Trailer
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.0.2
 // @description  Weist im Fahrzeug-Tab der Leitstelle Anhänger passenden Zugfahrzeugen zu
 // @author       Silberfighter & NilsPe
 // @match        https://www.leitstellenspiel.de/buildings/*
@@ -158,19 +158,21 @@
     const table = document.querySelector('#vehicle_table');
     if (!table) return;
 
-    let btn = document.createElement('button');
-    btn.id = 'autoAssignBtn';
-    btn.innerText = 'Anhänger zuweisen';
-    btn.style.margin = '10px';
-    btn.className = 'btn btn-success btn-xs';
-    btn.onclick = autoAssignTrailers;
+      let btn = document.createElement('a');
+      btn.id = 'autoAssignBtn';
+      btn.textContent = 'Anhänger zuweisen';
+      btn.className = 'btn btn-success btn-xs';
+      btn.style.display = 'inline-block';
+      btn.style.margin = '0 8px 1px 0';
+      btn.onclick = autoAssignTrailers;
 
-    let status = document.createElement('div');
-    status.id = 'autoAssignStatus';
-    status.style.margin = '5px';
-    status.style.fontWeight = 'bold';
-    status.style.color = 'white'; // weiße Schrift
-    status.innerText = '';
+      let status = document.createElement('span');
+      status.id = 'autoAssignStatus';
+      status.style.display = 'inline-block';
+      status.style.margin = '0 0 8px 0';
+      status.style.fontWeight = 'bold';
+      status.style.color = 'white';
+      status.innerText = '';
 
     table.before(btn);
     btn.after(status);
