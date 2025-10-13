@@ -1,0 +1,300 @@
+// ==UserScript==
+// @name         Leitstelle Share Buildings
+// @namespace    http://tampermonkey.net/
+// @version      1.1.0
+// @description  Buttons zum freigeben/nicht freigeben von Zellen und KH-Betten und dem einstellen der jeweiligen Gebühren
+// @author       DrTraxx/Silberfighter & NilsPe
+// @match        https://www.leitstellenspiel.de/buildings*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const CONFIG = {
+    // UI
+    buttonLabelShare:   'Gebäude freigeben',
+    buttonLabelUnshare: 'Freigabe entfernen',
+    showShareButton:   true,
+    showUnshareButton: false, // ← hier kannst du den roten Button ausblenden
+
+    // Was verarbeiten?
+    processHospitals: true, // Krankenhaus-Betten
+    processCells:     true, // Polizeizellen
+
+    // Gebühren für Freigeben (0/10/20/30/40/50)
+    hospitalPercent: 10,
+    cellPercent:     10,
+
+    // Verhalten
+    delayMs: 100,
+    showProgress: true,
+    tabSelector: '#tab_extensions',
+    reloadAfter: false
+  };
+
+  // ================= Helpers =================
+  const delay = (ms) => new Promise(r => setTimeout(r, ms));
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+  function pctToStep(p) {
+    if (![0,10,20,30,40,50].includes(p)) throw new Error('Ungültiger Prozentwert: ' + p);
+    return Math.floor(p / 10); // 0..5
+  }
+
+  function isBlockHeaderRow(tr) {
+    const a = tr.querySelector('a.btn');
+    if (!a) return false;
+    const t = norm(a.textContent);
+    return t.includes('im verband freigeben') || t.includes('nicht im verband freigeben');
+  }
+
+  function rowType(row) {
+    const btn = row.querySelector('a.btn');
+    const t = norm(btn?.textContent || '');
+    const text = norm(row.innerText);
+    if (t.includes('zellen')) return 'cells';
+    if (t.includes('krankenhaus') || text.includes('betten')) return 'hospital';
+    return 'unknown';
+  }
+
+  function findShareButton(row) {
+    return Array.from(row.querySelectorAll('a.btn'))
+      .find(a => a.classList.contains('btn-success') && norm(a.textContent).includes('im verband freigeben')) || null;
+  }
+
+  function findUnshareButton(row) {
+    // meist „… nicht im Verband freigeben“, häufig btn-danger (aber wir gehen primär auf den Text)
+    return Array.from(row.querySelectorAll('a.btn'))
+      .find(a => norm(a.textContent).includes('nicht im verband freigeben')) || null;
+  }
+
+  // Gebäude-ID direkt aus Block ermitteln (Share-Link oder irgendein /buildings/{id}-Link im Block)
+  function getBuildingIdFromBlock(headerTr) {
+    const share = headerTr.querySelector('a.btn[href*="/buildings/"]');
+    let m = share?.href?.match(/\/buildings\/(\d+)\b/);
+    if (m) return Number(m[1]);
+
+    let cur = headerTr;
+    while (cur) {
+      const a = cur.querySelector('a[href*="/buildings/"]');
+      m = a?.href?.match(/\/buildings\/(\d+)\b/);
+      if (m) return Number(m[1]);
+      cur = cur.nextElementSibling;
+      if (cur && isBlockHeaderRow(cur)) break;
+    }
+    return null;
+  }
+
+  // Kostenlinks – falls DOM sie bereits anzeigt, nutzen wir sie
+  function findCostLinkNearbyFromHeader(headerTr, step) {
+    const linkIn = (row) => {
+      return Array.from(row.querySelectorAll('a[href*="/alliance_costs/"]'))
+        .find(a => (a.href.match(/\/alliance_costs\/(\d+)\b/)||[])[1] == step) || null;
+    };
+    let l = linkIn(headerTr);
+    if (l) return l;
+    let cursor = headerTr.nextElementSibling;
+    while (cursor && !isBlockHeaderRow(cursor)) {
+      l = linkIn(cursor);
+      if (l) return l;
+      cursor = cursor.nextElementSibling;
+    }
+    return null;
+  }
+
+  async function fireLinkGET(urlOrA) {
+    const href = typeof urlOrA === 'string' ? urlOrA : urlOrA?.href;
+    if (!href) return false;
+    try {
+      const res = await fetch(href, {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: { 'x-requested-with': 'XMLHttpRequest' }
+      });
+      return res.ok;
+    } catch {
+      if (urlOrA && typeof urlOrA !== 'string') urlOrA.click();
+      return true;
+    }
+  }
+
+  // ================= Actions =================
+  async function runSharing($status) {
+    const { table, targets } = collectTargets($status);
+    if (!targets) return;
+
+    const hpStep = pctToStep(CONFIG.hospitalPercent);
+    const ceStep = pctToStep(CONFIG.cellPercent);
+
+    let total = 0;
+    for (const t of targets) {
+      const step = t.type === 'hospital' ? hpStep : ceStep;
+      const needsShare = !!findShareButton(t.tr);
+      const hasFeeLink = !!findCostLinkNearbyFromHeader(t.tr, step);
+      if (needsShare || hasFeeLink) total++;
+    }
+    if (total === 0) { setStatus($status, 'Alles bereits freigegeben & bepreist.'); return; }
+
+    let done = 0;
+    setStatus($status, `0 / ${total} … läuft`);
+
+    for (const t of targets) {
+      const step = t.type === 'hospital' ? hpStep : ceStep;
+
+      // 1) evtl. freigeben
+      const shareBtn = findShareButton(t.tr);
+      if (shareBtn) {
+        await fireLinkGET(shareBtn);
+        await delay(CONFIG.delayMs);
+      }
+
+      // 2) Gebühren setzen (sofort/direkt, DOM-unabhängig)
+      let fee = findCostLinkNearbyFromHeader(t.tr, step);
+      if (fee) {
+        await fireLinkGET(fee);
+      } else {
+        await fireLinkGET(`/buildings/${t.id}/alliance_costs/${step}`);
+      }
+
+      await delay(CONFIG.delayMs);
+      done++;
+      setStatus($status, `${done} / ${total} … läuft`);
+    }
+
+    setStatus($status, `✔ Fertig (${done} / ${total})`);
+    if (CONFIG.reloadAfter) location.reload();
+  }
+
+  async function runUnsharing($status) {
+    const { table, targets } = collectTargets($status);
+    if (!targets) return;
+
+    // nur da zählen, wo tatsächlich „Nicht im Verband freigeben“ vorhanden ist
+    const candidates = targets.filter(t => !!findUnshareButton(t.tr));
+    if (candidates.length === 0) { setStatus($status, 'Keine freigegebenen Blöcke gefunden.'); return; }
+
+    let done = 0;
+    setStatus($status, `0 / ${candidates.length} … läuft`);
+
+    for (const t of candidates) {
+      const unshareBtn = findUnshareButton(t.tr);
+      if (unshareBtn) {
+        await fireLinkGET(unshareBtn);
+        await delay(CONFIG.delayMs);
+        done++;
+        setStatus($status, `${done} / ${candidates.length} … läuft`);
+      }
+    }
+
+    setStatus($status, `✔ Freigabe entfernt (${done} / ${candidates.length})`);
+    if (CONFIG.reloadAfter) location.reload();
+  }
+
+  function collectTargets($status) {
+    const tab = document.querySelector(CONFIG.tabSelector);
+    if (!tab) { setStatus($status, 'Tab nicht gefunden.'); return {}; }
+    const table = tab.querySelector('table');
+    if (!table) { setStatus($status, 'Keine Tabelle gefunden.'); return {}; }
+
+    const rows = Array.from(table.querySelectorAll('tr')).filter(tr => tr.querySelector('td'));
+    const headers = rows.filter(isBlockHeaderRow);
+
+    const targets = headers
+      .map(tr => ({ tr, type: rowType(tr), id: getBuildingIdFromBlock(tr) }))
+      .filter(x => x.id && ((x.type === 'hospital' && CONFIG.processHospitals) || (x.type === 'cells' && CONFIG.processCells)));
+
+    if (!targets.length) { setStatus($status, 'Keine passenden Blöcke gefunden.'); return {}; }
+    return { table, targets };
+  }
+
+  // ================= UI =================
+  function setStatus(el, text) {
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = text.startsWith('✔') ? 'green'
+                     : text.toLowerCase().includes('fehler') ? '#c00' : '';
+  }
+
+  function addButtonsIfMissing() {
+    const tab = document.querySelector(CONFIG.tabSelector);
+    const table = tab?.querySelector('table');
+    if (!table) return;
+    if (tab.querySelector('.sb-share-container')) return;
+
+    const container = document.createElement('div');
+    container.className = 'sb-share-container';
+    container.style.margin = '10px 0';
+
+    // Share (blau)
+    let btnShare, statusShare;
+    if (CONFIG.showShareButton) {
+      btnShare = document.createElement('button');
+      btnShare.type = 'button';
+      btnShare.textContent = CONFIG.buttonLabelShare;
+      btnShare.className = 'btn btn-success btn-xs';
+      btnShare.style.marginRight = '8px';
+
+      statusShare = document.createElement('span');
+      statusShare.style.marginLeft = '6px';
+      statusShare.style.fontWeight = 'bold';
+      if (!CONFIG.showProgress) statusShare.style.display = 'none';
+
+      btnShare.addEventListener('click', async () => {
+        btnShare.disabled = true;
+        setStatus(statusShare, 'Starte …');
+        try {
+          await runSharing(statusShare);
+        } catch (e) {
+          console.error(e);
+          setStatus(statusShare, `Fehler: ${String(e)}`);
+        } finally {
+          btnShare.disabled = false;
+        }
+      });
+
+      container.appendChild(btnShare);
+      container.appendChild(statusShare);
+    }
+
+    // Unshare (rot)
+    if (CONFIG.showUnshareButton) {
+      const spacer = document.createElement('span');
+      spacer.style.display = 'inline-block';
+      spacer.style.width = '16px';
+      container.appendChild(spacer);
+
+      const btnUnshare = document.createElement('button');
+      btnUnshare.type = 'button';
+      btnUnshare.textContent = CONFIG.buttonLabelUnshare;
+      btnUnshare.className = 'btn btn-danger btn-xs';
+      btnUnshare.style.marginRight = '8px';
+
+      const statusUnshare = document.createElement('span');
+      statusUnshare.style.marginLeft = '6px';
+      statusUnshare.style.fontWeight = 'bold';
+      if (!CONFIG.showProgress) statusUnshare.style.display = 'none';
+
+      btnUnshare.addEventListener('click', async () => {
+        btnUnshare.disabled = true;
+        setStatus(statusUnshare, 'Starte …');
+        try {
+          await runUnsharing(statusUnshare);
+        } catch (e) {
+          console.error(e);
+          setStatus(statusUnshare, `Fehler: ${String(e)}`);
+        } finally {
+          btnUnshare.disabled = false;
+        }
+      });
+
+      container.appendChild(btnUnshare);
+      container.appendChild(statusUnshare);
+    }
+
+    // Vor die Tabelle hängen
+    table.parentNode.insertBefore(container, table);
+  }
+
+  setInterval(addButtonsIfMissing, 1500);
+})();
