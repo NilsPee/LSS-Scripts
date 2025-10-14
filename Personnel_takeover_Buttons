@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name        Personalübernahme
 // @namespace   http://tampermonkey.net/
-// @version     1.0.1
+// @version     1.1.5
 // @author      NilsPe
-// @description Buttons zum schnellen Auswählen von 1–10/18/40 Personen bei der Personalübernahme. Nimmt nur Unausgebildete und Ungebundene.
+// @description Schnellauswahl 1–10/15/20/30... Personen zur Übernahme (Werte im Script änderbar). Mit Lehrgangsfilter und nur ungebundenem Personal.
 // @match       https://www.leitstellenspiel.de/buildings/*/hire
 // @match       https://polizei.leitstellenspiel.de/buildings/*/hire
 // @icon        https://www.google.com/s2/favicons?sz=64&domain=leitstellenspiel.de
@@ -12,114 +12,198 @@
 // ==/UserScript==
 
 /* global loadedBuildings */
-
 (function () {
-  function $(sel, root=document){ return root.querySelector(sel); }
-  function $all(sel, root=document){ return Array.from(root.querySelectorAll(sel)); }
-  function isHirePage(){ return /\/buildings\/\d+\/hire$/.test(location.pathname); }
-  function getPanelHeading(buildingId){ return document.querySelector(".panel-heading[building_id='"+buildingId+"']"); }
+  const FILTER_ANY = "__ANY__";
+  const FILTER_NONE = "__NONE__";
 
-  async function ensurePanelLoadedAndOpen(buildingId){
-    const heading = getPanelHeading(buildingId);
-    const body = document.querySelector(".panel-body[building_id='"+buildingId+"']");
-    if (!heading || !body) return;
-    const hrefMatch = heading.outerHTML.match(/href="([^"]+)"/);
-    const href = hrefMatch ? hrefMatch[1] : null;
-    if (body.classList.contains("hidden")) body.classList.remove("hidden");
-    if (href && Array.isArray(window.loadedBuildings)){
-      if (loadedBuildings.indexOf(href) === -1){
-        loadedBuildings.push(href);
-        await window.jQuery.get(href, data => {
-          window.jQuery(".panel-body[building_id='"+buildingId+"']").html(data);
-        });
-      }
-    }
+  const $ = (s, r=document)=>r.querySelector(s);
+  const $$ = (s, r=document)=>Array.from(r.querySelectorAll(s));
+  const isHirePage = () => /\/buildings\/\d+\/hire$/.test(location.pathname);
+  const headingOf = id => document.querySelector(`.panel-heading[building_id='${id}']`);
+  const bodyOf = id => document.querySelector(`.panel-body[building_id='${id}']`);
+  const filterId = id => `transfer-filter-${id}`;
+
+  const courseCache = new Map(); // buildingId -> string[]
+
+  function getHref(id){
+    const h = headingOf(id);
+    if (!h) return null;
+    const m = h.outerHTML.match(/href="([^"]+)"/);
+    return m ? m[1] : null;
   }
 
-  function findColumnIndexByHeader(tbody){
-    const table = tbody.closest("table");
-    if (!table) return {};
-    let headers = [];
-    const thead = table.querySelector("thead");
-    if (thead){ headers = $all("th", thead); }
-    else {
-      const firstRow = table.querySelector("tbody tr");
-      if (firstRow) headers = $all("th, td", firstRow);
+  async function ensurePanelLoadedAndOpen(id){
+    const heading = headingOf(id);
+    const body = bodyOf(id);
+    if (!heading || !body) return null;
+    const href = getHref(id);
+    if (body.classList.contains("hidden")) body.classList.remove("hidden");
+    if (href && Array.isArray(window.loadedBuildings) && loadedBuildings.indexOf(href) === -1){
+      loadedBuildings.push(href);
+      await window.jQuery.get(href, html => {
+        window.jQuery(`.panel-body[building_id='${id}']`).html(html);
+      });
     }
+    return body;
+  }
+
+  function findColumnIndexByHeader(scope){
+    const table = scope.querySelector("table") || scope.closest("table");
+    if (!table) return { idxAusbildung:-1, idxGebunden:-1 };
+    const thead = table.querySelector("thead");
+    const headers = thead ? $$("th", thead)
+                          : $$("tbody tr:first-child th, tbody tr:first-child td", table);
     const norm = s => (s||"").trim().toLowerCase();
-    let idxAusbildung = -1, idxGebunden = -1;
-    headers.forEach((th, i)=>{
+    let idxAusbildung=-1, idxGebunden=-1;
+    headers.forEach((th,i)=>{
       const t = norm(th.textContent);
-      if (idxAusbildung === -1 && /ausbildung|opleiding|training/.test(t)) idxAusbildung = i;
-      if (idxGebunden === -1 && /(gebunden|gebonden|bound)/.test(t)) idxGebunden = i;
+      if (idxAusbildung<0 && /ausbildung|opleiding|training/.test(t)) idxAusbildung=i;
+      if (idxGebunden<0 && /(gebunden|gebonden|bound)/.test(t)) idxGebunden=i;
     });
     return { idxAusbildung, idxGebunden };
   }
 
-  function countCheckedIn(body){
-    return $all("input[type='checkbox']", body).filter(cb=>cb.checked).length;
+  function collectCourses(scope, idxAusbildung){
+    if (idxAusbildung < 0) return [];
+    const table = scope.querySelector("table") || scope.closest("table") || scope;
+    const set = new Set();
+    $$("tbody tr", table).forEach(tr=>{
+      const td = $$("td", tr)[idxAusbildung];
+      const txt = (td?.textContent || "").trim();
+      if (txt) set.add(txt);
+    });
+    return Array.from(set).sort((a,b)=>a.localeCompare(b, undefined, {sensitivity:"base"}));
   }
 
-  // Zähler NACH den Buttons platzieren
-  function updateCounter(buildingId, value){
-    const id = "transfer-selection-counter-" + buildingId;
-    const badge = document.createElement("span");
-    badge.id = id;
-    badge.className = "label label-primary";
-    badge.textContent = value + " ausgewählt";
-    badge.style.marginLeft = "6px";
-    const existing = document.getElementById(id);
-    if (existing) {
-      existing.textContent = badge.textContent;
-      return;
+  async function fetchCoursesOffDOM(id){
+    if (courseCache.has(id)) return courseCache.get(id);
+
+    const liveBody = bodyOf(id);
+    if (liveBody && !liveBody.classList.contains("hidden") && liveBody.querySelector("table")){
+      const scope = liveBody.querySelector("tbody") || liveBody;
+      const { idxAusbildung } = findColumnIndexByHeader(scope);
+      const courses = collectCourses(scope, idxAusbildung);
+      courseCache.set(id, courses);
+      return courses;
     }
-    const grp = document.getElementById("transfer-assigner-"+buildingId);
-    if (grp && grp.parentNode) grp.after(badge);
+
+    const href = getHref(id);
+    if (!href) return [];
+    const html = await new Promise(res=>window.jQuery.get(href, data=>res(data)));
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html;
+    const scope = tmp.querySelector("tbody") || tmp;
+    const { idxAusbildung } = findColumnIndexByHeader(scope);
+    const courses = collectCourses(scope, idxAusbildung);
+    courseCache.set(id, courses);
+    return courses;
   }
 
-  async function selectN(buildingId, n){
-    await ensurePanelLoadedAndOpen(buildingId);
-    const body = document.querySelector(".panel-body[building_id='"+buildingId+"']");
+  function countCheckedIn(scope){ return $$("input[type='checkbox']", scope).filter(cb=>cb.checked).length; }
+
+  function updateCounter(id, val){
+    const badgeId = `transfer-selection-counter-${id}`;
+    const badge = document.getElementById(badgeId) || (()=>{ const s=document.createElement("span"); s.id=badgeId; s.className="label label-primary"; s.style.marginLeft="6px"; const grp=document.getElementById(`transfer-assigner-${id}`); grp && grp.after(s); return s; })();
+    badge.textContent = `${val} ausgewählt`;
+  }
+
+  function currentFilter(id){
+    const sel = document.getElementById(filterId(id));
+    return sel ? sel.value : FILTER_NONE;
+  }
+
+  async function populateFilterOptions(id){
+    const sel = document.getElementById(filterId(id));
+    if (!sel) return;
+    const prev = sel.value;
+    const courses = await fetchCoursesOffDOM(id);
+    sel.innerHTML = "";
+    const add=(v,t)=>{ const o=document.createElement("option"); o.value=v; o.textContent=t; sel.appendChild(o); };
+    add(FILTER_NONE, "Ohne Ausbildung");
+    add(FILTER_ANY, "Beliebig");
+    courses.forEach(c=>add(c,c));
+    if ([...sel.options].some(o=>o.value===prev)) sel.value = prev;
+  }
+
+  function stopToggle(el){
+    ["click","mousedown","mouseup","dblclick","keydown"].forEach(evt=>{
+      el.addEventListener(evt, e=>e.stopPropagation(), true);
+    });
+  }
+
+  function ensureFilterUI(id){
+    if (document.getElementById(filterId(id))) return;
+    const wrap = document.createElement("span");
+    wrap.style.marginRight = "6px";
+
+    const sel = document.createElement("select");
+    sel.id = filterId(id);
+    sel.className = "form-control input-sm";
+    sel.style.display = "inline-block";
+    sel.style.width = "auto";
+    sel.style.marginRight = "6px";
+    [{v: FILTER_NONE, t: "Ohne Ausbildung"}, {v: FILTER_ANY, t: "Beliebig"}]
+      .forEach(o=>{ const opt=document.createElement("option"); opt.value=o.v; opt.textContent=o.t; sel.appendChild(opt); });
+
+    stopToggle(sel);
+
+    sel.addEventListener("mousedown", ()=>populateFilterOptions(id));
+    sel.addEventListener("focus", ()=>populateFilterOptions(id), true);
+    sel.addEventListener("change", ()=>{ const b=bodyOf(id); if (b) updateCounter(id, countCheckedIn(b)); });
+
+    wrap.appendChild(sel);
+    const target = headingOf(id).querySelector("a") || headingOf(id);
+    target.appendChild(wrap);
+  }
+
+  async function selectN(id, n){
+    const body = await ensurePanelLoadedAndOpen(id);
     if (!body) return;
-    const tbody = body.querySelector("tbody") || body;
-    const { idxAusbildung, idxGebunden } = findColumnIndexByHeader(tbody);
+
+    const scope = body.querySelector("tbody") || body;
+    const { idxAusbildung, idxGebunden } = findColumnIndexByHeader(scope);
+    const want = currentFilter(id);
+
     let left = Number(n);
-    $all("tr", tbody).forEach(tr=>{
-      if (left <= 0) return;
+    $$("tr", scope).forEach(tr=>{
+      if (left<=0) return;
       const cb = tr.querySelector("input[type='checkbox']");
       if (!cb || cb.disabled || cb.checked) return;
-      if (idxAusbildung >= 0 || idxGebunden >= 0){
-        const cells = $all("td", tr);
-        const ausbildungOk = (idxAusbildung < 0) ? true : (cells[idxAusbildung]?.textContent.trim() === "");
-        const gebundenOk   = (idxGebunden   < 0) ? true : (cells[idxGebunden]?.textContent.trim() === "");
-        if (!(ausbildungOk && gebundenOk)) return;
+
+      const tds = $$("td", tr);
+      const ausTxt = (tds[idxAusbildung]?.textContent || "").trim();
+      const gebTxt = (tds[idxGebunden]?.textContent || "").trim();
+
+      if (idxGebunden >= 0 && gebTxt !== "") return; // nur ungebunden
+      if (want === FILTER_NONE) {
+        if (idxAusbildung >= 0 && ausTxt !== "") return;
+      } else if (want !== FILTER_ANY) {
+        if (idxAusbildung >= 0 && !ausTxt.includes(want)) return;
       }
-      cb.checked = true;
-      left--;
+
+      cb.checked = true; left--;
     });
-    updateCounter(buildingId, countCheckedIn(body));
+
+    updateCounter(id, countCheckedIn(body));
   }
 
-  async function resetSelection(buildingId){
-    await ensurePanelLoadedAndOpen(buildingId);
-    const body = document.querySelector(".panel-body[building_id='"+buildingId+"']");
+  async function resetSelection(id){
+    const body = await ensurePanelLoadedAndOpen(id);
     if (!body) return;
-    $all("input[type='checkbox']", body).forEach(cb=>{ if (cb.checked) cb.checked = false; });
-    updateCounter(buildingId, 0);
+    $$("input[type='checkbox']", body).forEach(cb=>{ if (cb.checked) cb.checked=false; });
+    updateCounter(id, 0);
   }
 
-  function makeButtons(buildingId){
-    const existing = document.getElementById("transfer-assigner-"+buildingId);
+  function makeButtons(id){
+    const existing = document.getElementById(`transfer-assigner-${id}`);
     if (existing) existing.remove();
     const group = document.createElement("div");
-    group.id = "transfer-assigner-"+buildingId;
+    group.id = `transfer-assigner-${id}`;
     group.className = "btn-group btn-group-sm";
 
-    const add = (label, fn)=>{
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "btn btn-default btn-sm";
-      b.textContent = label;
+    const add=(label,fn)=>{
+      const b=document.createElement("button");
+      b.type="button"; b.className="btn btn-default btn-sm"; b.textContent=label;
       b.addEventListener("click", e=>{ fn(); e.preventDefault(); });
       group.appendChild(b);
     };
@@ -127,33 +211,33 @@
     const trash = document.createElement("span");
     trash.className = "glyphicon glyphicon-trash";
     const resetBtn = document.createElement("button");
-    resetBtn.type = "button";
-    resetBtn.className = "btn btn-default btn-sm";
+    resetBtn.type = "button"; resetBtn.className = "btn btn-default btn-sm";
     resetBtn.appendChild(trash);
-    resetBtn.addEventListener("click", e=>{ resetSelection(buildingId); e.preventDefault(); });
+    resetBtn.addEventListener("click", e=>{ resetSelection(id); e.preventDefault(); });
     group.appendChild(resetBtn);
 
-    for (let i=1;i<=10;i++) add(String(i), ()=>selectN(buildingId, i));
-    [15,20].forEach(n=>add(String(n), ()=>selectN(buildingId, n)));
-
+    for (let i=1;i<=10;i++) add(String(i), ()=>selectN(id,i));
+    [15,20,30,40,50,60].forEach(n=>add(String(n), ()=>selectN(id,n)));
     return group;
   }
 
   function render(){
     document.querySelectorAll(".panel-heading[building_id]").forEach(ph=>{
-      const bid = ph.getAttribute("building_id");
+      const id = ph.getAttribute("building_id");
       const target = ph.querySelector("a") || ph;
-      target.appendChild(makeButtons(bid));
-      const body = document.querySelector(".panel-body[building_id='"+bid+"']");
-      if (body) updateCounter(bid, countCheckedIn(body));
+      ensureFilterUI(id);
+      target.appendChild(makeButtons(id));
+      const body = bodyOf(id);
+      if (body) updateCounter(id, countCheckedIn(body));
     });
   }
 
-  function main(){
-    if (!isHirePage()) return;
+  if (isHirePage()){
     render();
+    // Neuer Event-Name für dieses Script:
+    document.addEventListener("personaluebernahme:render", render);
+
+    // Optional: Kompatibilität zum alten Namen
     document.addEventListener("lehrgangszuweiser:render-personnel-selectors", render);
   }
-
-  main();
 })();
