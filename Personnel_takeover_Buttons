@@ -1,0 +1,159 @@
+// ==UserScript==
+// @name        Personalübernahme
+// @namespace   http://tampermonkey.net/
+// @version     1.0.1
+// @author      NilsPe
+// @description Buttons zum schnellen Auswählen von 1–10/18/40 Personen bei der Personalübernahme. Nimmt nur Unausgebildete und Ungebundene.
+// @match       https://www.leitstellenspiel.de/buildings/*/hire
+// @match       https://polizei.leitstellenspiel.de/buildings/*/hire
+// @icon        https://www.google.com/s2/favicons?sz=64&domain=leitstellenspiel.de
+// @run-at      document-idle
+// @grant       none
+// ==/UserScript==
+
+/* global loadedBuildings */
+
+(function () {
+  function $(sel, root=document){ return root.querySelector(sel); }
+  function $all(sel, root=document){ return Array.from(root.querySelectorAll(sel)); }
+  function isHirePage(){ return /\/buildings\/\d+\/hire$/.test(location.pathname); }
+  function getPanelHeading(buildingId){ return document.querySelector(".panel-heading[building_id='"+buildingId+"']"); }
+
+  async function ensurePanelLoadedAndOpen(buildingId){
+    const heading = getPanelHeading(buildingId);
+    const body = document.querySelector(".panel-body[building_id='"+buildingId+"']");
+    if (!heading || !body) return;
+    const hrefMatch = heading.outerHTML.match(/href="([^"]+)"/);
+    const href = hrefMatch ? hrefMatch[1] : null;
+    if (body.classList.contains("hidden")) body.classList.remove("hidden");
+    if (href && Array.isArray(window.loadedBuildings)){
+      if (loadedBuildings.indexOf(href) === -1){
+        loadedBuildings.push(href);
+        await window.jQuery.get(href, data => {
+          window.jQuery(".panel-body[building_id='"+buildingId+"']").html(data);
+        });
+      }
+    }
+  }
+
+  function findColumnIndexByHeader(tbody){
+    const table = tbody.closest("table");
+    if (!table) return {};
+    let headers = [];
+    const thead = table.querySelector("thead");
+    if (thead){ headers = $all("th", thead); }
+    else {
+      const firstRow = table.querySelector("tbody tr");
+      if (firstRow) headers = $all("th, td", firstRow);
+    }
+    const norm = s => (s||"").trim().toLowerCase();
+    let idxAusbildung = -1, idxGebunden = -1;
+    headers.forEach((th, i)=>{
+      const t = norm(th.textContent);
+      if (idxAusbildung === -1 && /ausbildung|opleiding|training/.test(t)) idxAusbildung = i;
+      if (idxGebunden === -1 && /(gebunden|gebonden|bound)/.test(t)) idxGebunden = i;
+    });
+    return { idxAusbildung, idxGebunden };
+  }
+
+  function countCheckedIn(body){
+    return $all("input[type='checkbox']", body).filter(cb=>cb.checked).length;
+  }
+
+  // Zähler NACH den Buttons platzieren
+  function updateCounter(buildingId, value){
+    const id = "transfer-selection-counter-" + buildingId;
+    const badge = document.createElement("span");
+    badge.id = id;
+    badge.className = "label label-primary";
+    badge.textContent = value + " ausgewählt";
+    badge.style.marginLeft = "6px";
+    const existing = document.getElementById(id);
+    if (existing) {
+      existing.textContent = badge.textContent;
+      return;
+    }
+    const grp = document.getElementById("transfer-assigner-"+buildingId);
+    if (grp && grp.parentNode) grp.after(badge);
+  }
+
+  async function selectN(buildingId, n){
+    await ensurePanelLoadedAndOpen(buildingId);
+    const body = document.querySelector(".panel-body[building_id='"+buildingId+"']");
+    if (!body) return;
+    const tbody = body.querySelector("tbody") || body;
+    const { idxAusbildung, idxGebunden } = findColumnIndexByHeader(tbody);
+    let left = Number(n);
+    $all("tr", tbody).forEach(tr=>{
+      if (left <= 0) return;
+      const cb = tr.querySelector("input[type='checkbox']");
+      if (!cb || cb.disabled || cb.checked) return;
+      if (idxAusbildung >= 0 || idxGebunden >= 0){
+        const cells = $all("td", tr);
+        const ausbildungOk = (idxAusbildung < 0) ? true : (cells[idxAusbildung]?.textContent.trim() === "");
+        const gebundenOk   = (idxGebunden   < 0) ? true : (cells[idxGebunden]?.textContent.trim() === "");
+        if (!(ausbildungOk && gebundenOk)) return;
+      }
+      cb.checked = true;
+      left--;
+    });
+    updateCounter(buildingId, countCheckedIn(body));
+  }
+
+  async function resetSelection(buildingId){
+    await ensurePanelLoadedAndOpen(buildingId);
+    const body = document.querySelector(".panel-body[building_id='"+buildingId+"']");
+    if (!body) return;
+    $all("input[type='checkbox']", body).forEach(cb=>{ if (cb.checked) cb.checked = false; });
+    updateCounter(buildingId, 0);
+  }
+
+  function makeButtons(buildingId){
+    const existing = document.getElementById("transfer-assigner-"+buildingId);
+    if (existing) existing.remove();
+    const group = document.createElement("div");
+    group.id = "transfer-assigner-"+buildingId;
+    group.className = "btn-group btn-group-sm";
+
+    const add = (label, fn)=>{
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "btn btn-default btn-sm";
+      b.textContent = label;
+      b.addEventListener("click", e=>{ fn(); e.preventDefault(); });
+      group.appendChild(b);
+    };
+
+    const trash = document.createElement("span");
+    trash.className = "glyphicon glyphicon-trash";
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "btn btn-default btn-sm";
+    resetBtn.appendChild(trash);
+    resetBtn.addEventListener("click", e=>{ resetSelection(buildingId); e.preventDefault(); });
+    group.appendChild(resetBtn);
+
+    for (let i=1;i<=10;i++) add(String(i), ()=>selectN(buildingId, i));
+    [15,20].forEach(n=>add(String(n), ()=>selectN(buildingId, n)));
+
+    return group;
+  }
+
+  function render(){
+    document.querySelectorAll(".panel-heading[building_id]").forEach(ph=>{
+      const bid = ph.getAttribute("building_id");
+      const target = ph.querySelector("a") || ph;
+      target.appendChild(makeButtons(bid));
+      const body = document.querySelector(".panel-body[building_id='"+bid+"']");
+      if (body) updateCounter(bid, countCheckedIn(body));
+    });
+  }
+
+  function main(){
+    if (!isHirePage()) return;
+    render();
+    document.addEventListener("lehrgangszuweiser:render-personnel-selectors", render);
+  }
+
+  main();
+})();
