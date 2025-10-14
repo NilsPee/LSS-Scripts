@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Baumeister 2.0
 // @namespace    bos-ernie.leitstellenspiel.de
-// @version      2.0
+// @version      2.1
 // @license      BSD-3-Clause
 // @author       BOS-Ernie & NilsPe
 // @description  Mehrere Positionen vormerken, eigene Namen + Zähler, Leitstelle pro Marker, Kombi-Auswahl. Baut wie Baumeister nacheinander.
@@ -28,6 +28,7 @@
     12: "SEG ",
     13: "Polizeihubschrauber ",
     15: "Wasserrettung ",
+    16: "JVA ",
   };
 
   // --- Farben für Marker + Legende ---
@@ -42,6 +43,7 @@
     12: "orange",
     13: "teal",
     15: "cyan",
+    16: "blue",
   };
 
   // --- Gebäudekombinationen ---
@@ -54,16 +56,42 @@
   // --- Namens-Suffix + Zähler ---
   let nameSuffixInput = null;
   let nameCounters = {};
+  let startNumberInput = null;
+  let padLengthInput = null;
+  let perKey = {};
 
-  function buildingNameFor(type) {
-    const suffix = nameSuffixInput ? nameSuffixInput.value.trim() : "";
-    const key = type + "|" + suffix;
-    if (!nameCounters[key]) nameCounters[key] = 0;
-    nameCounters[key]++;
-//    const number = String(nameCounters[key]).padStart(2, "0");
-    const number = String(nameCounters[key]).padStart(2, "0");
-    return (TYPE_PREFIXES[type] || "Gebäude ") + suffix + " " + number;
+function parseSuffixRaw() {
+  const raw = nameSuffixInput ? nameSuffixInput.value.trim() : "";
+  const m = raw.match(/^(.*?)(\d+)$/); // "abcd 02" -> base="abcd", seed="02"
+  if (m) return { base: m[1].trim(), seedNum: parseInt(m[2], 10), seedPad: m[2].length };
+  return { base: raw, seedNum: null, seedPad: null };
+}
+
+function buildingNameFor(type) {
+  const { base, seedNum, seedPad } = parseSuffixRaw();
+  const key = type + "|" + base;
+
+  // Defaults aus UI (falls gesetzt), sonst 1 bzw. 2
+  const defaultStart = Math.max(1, parseInt(startNumberInput?.value ?? "1", 10) || 1);
+  const defaultPad = Math.max(1, parseInt(padLengthInput?.value ?? "2", 10) || 2);
+
+  if (!perKey[key]) {
+    perKey[key] = {
+      count: (seedNum ?? defaultStart) - 1,
+      pad:   seedPad ?? defaultPad
+    };
+  } else {
+    // Wenn Nutzer eine größere Seed eingibt, hochsetzen; Pad ggf. aktualisieren
+    if (seedNum !== null && seedNum - 1 > perKey[key].count) perKey[key].count = seedNum - 1;
+    if (seedPad !== null) perKey[key].pad = seedPad;
   }
+
+  perKey[key].count++;
+  const number = String(perKey[key].count).padStart(perKey[key].pad, "0");
+  const prefix = TYPE_PREFIXES[type] || "Gebäude ";
+  return prefix + (base ? base + " " : "") + number;
+}
+
 
   // --- Hilfsfunktionen für Leitstellenwahl ---
   class Coordinate {
@@ -111,23 +139,20 @@ async function createBuilding() {
 
   const typeVal = document.getElementById("building_building_type")?.value;
 
-  // --- DOM-Feld setzen ---
-  if (typeVal === "0") { // Feuerwache
-    const sf = document.getElementById("building_start_vehicle_feuerwache");
-    if (sf) sf.value = 30; // HLF 20
-  }
-  if (typeVal === "18") { // Klein-Feuerwache
-    const sf = document.getElementById("building_start_vehicle_feuerwache_kleinwache");
-    if (sf) sf.value = 30; // HLF 20
-  }
-
-  // --- FormData erzeugen + fix überschreiben ---
+  // --- FormData erzeugen ---
   const formData = new FormData(form);
   if (typeVal === "0" || typeVal === "18") {
     formData.set("building[start_vehicle]", "30"); // HLF 20
   }
 
-  const res = await fetch("/buildings", {
+  // --- Ziel-URL je nach Typ ---
+  let url = "/buildings";
+  if (typeVal === "16") {
+    // Polizeizellen / Verbandszellen
+    url = "/alliance_buildings";
+  }
+
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       "x-csrf-token": document.querySelector('meta[name="csrf-token"]')?.content,
@@ -153,6 +178,7 @@ async function createBuilding() {
 
 
 
+
   // --- Queue + Marker + Status/Legende ---
   let planned = [];
   let previewMarkers = [];
@@ -171,13 +197,15 @@ async function createBuilding() {
     previewMarkers.push(m);
   }
 
-    function resetPlans() {
-        planned = [];
-        previewMarkers.forEach(m => window.map?.removeLayer(m));
-        previewMarkers = [];
-        nameCounters = {}; // --- Zähler zurücksetzen ---
-        renderStatus();
-    }
+function resetPlans() {
+  planned = [];
+  previewMarkers.forEach(m => window.map?.removeLayer(m));
+  previewMarkers = [];
+  nameCounters = {};
+  perKey = {}; // NEU
+  renderStatus();
+}
+
 
   function renderLegend() {
     if (!legendBox) return;
@@ -331,6 +359,56 @@ nameSuffixInput.style.flex = "1"; // Input nimmt Restbreite
 
 suffixWrapper.append(suffixLabel, nameSuffixInput);
 host.append(suffixWrapper);
+
+// --- Startnummer ---
+const startWrapper = document.createElement("div");
+startWrapper.className = "form-group";
+startWrapper.style.display = "flex";
+startWrapper.style.alignItems = "center";
+startWrapper.style.marginTop = "4px";
+
+const startLabel = document.createElement("label");
+startLabel.setAttribute("for", "custom_start_number");
+startLabel.className = "control-label";
+startLabel.style.width = "120px";
+startLabel.style.marginBottom = "0";
+startLabel.textContent = "Startnummer";
+
+startNumberInput = document.createElement("input");
+startNumberInput.type = "number";
+startNumberInput.id = "custom_start_number";
+startNumberInput.className = "form-control";
+startNumberInput.style.flex = "1";
+startNumberInput.min = "0";
+startNumberInput.value = "1"; // Default: beginnt bei 1
+
+startWrapper.append(startLabel, startNumberInput);
+host.append(startWrapper);
+
+// --- Pad-Länge ---
+const padWrapper = document.createElement("div");
+padWrapper.className = "form-group";
+padWrapper.style.display = "flex";
+padWrapper.style.alignItems = "center";
+padWrapper.style.marginTop = "4px";
+
+const padLabel = document.createElement("label");
+padLabel.setAttribute("for", "custom_pad_length");
+padLabel.className = "control-label";
+padLabel.style.width = "120px";
+padLabel.style.marginBottom = "0";
+padLabel.textContent = "Nummerierung 1|01|001";
+
+padLengthInput = document.createElement("input");
+padLengthInput.type = "number";
+padLengthInput.id = "custom_pad_length";
+padLengthInput.className = "form-control";
+padLengthInput.style.flex = "1";
+padLengthInput.min = "1";
+padLengthInput.value = "2"; // Default: 2 -> 01, 02, ...
+
+padWrapper.append(padLabel, padLengthInput);
+host.append(padWrapper);
 
   // --- Buttons in einer Reihe ---
   const btnRow = document.createElement("div");
