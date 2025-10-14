@@ -1,0 +1,575 @@
+// ==UserScript==
+// @name            Verbandsmitglieder-Panel mit Freigaben
+// @namespace       https://jxn.lss-manager.de
+// @version         1.4
+// @author          Jan (jxn_30) & NilsPe
+// @description     Mitgliederliste direkt auf der Hauptseite inkl. Anzahl der Freigaben mit Sortierung und Markierung
+// @icon            https://www.leitstellenspiel.de/favicon.ico
+// @match           https://www.leitstellenspiel.de/
+// @match           https://polizei.leitstellenspiel.de/
+// @require         https://raw.githubusercontent.com/LUFSI/framework/refs/heads/main/src/SharedAPIStorage.js
+// @run-at          document-idle
+// @grant           unsafeWindow
+// ==/UserScript==
+
+(() => {
+    'use strict';
+
+    /** Zugriff auf Seitenscope (nicht Sandbox) */
+    const UW = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+
+    /** Debug (bei Bedarf auf false stellen) */
+    const DEBUG_VBP = false;
+    const vbpLog = (...args) => { if (DEBUG_VBP) console.log('[VBP]', ...args); };
+    const vbpWarn = (...args) => { if (DEBUG_VBP) console.warn('[VBP]', ...args); };
+
+    /** Panel-Position: 'chat' | 'radio' | 'own' (Fenstermodus immer 'own') */
+    const MODE = 'own';
+
+    /** Freunde-Optionen */
+    const HIGHLIGHT_FRIENDS = false;
+    const FRIENDS_ON_TOP = false;
+
+    /** Freigaben-Optionen */
+    const COUNT_OWN_RELEASES = true; // eigene Freigaben mitzählen?
+    const INCLUDE_SIWA = true; // SiWas mitzählen
+    const INCLUDE_EVENT = false; // Events mitzählen?
+
+    /* global sharedAPIStorage */
+
+    const roles = {
+        admin: { title: 'Admin', icon: '♛' },
+        coadmin: { title: 'Co-Admin', icon: '♚' },
+        schooling: { title: 'Lehrgangsmeister', icon: '🕮' },
+        finance: { title: 'Finanzminister', icon: '💰' },
+        staff: { title: 'Verbands-Personal', icon: '👤' },
+        transport_requests: { title: 'Sprechwunsch-Admin', icon: '📣' },
+        view_logs: { title: 'Aufsichtsrat', icon: '🔍️' },
+        event_manager: { title: 'Eventmanager', icon: '🗓️' },
+    };
+
+    const createRoleFlagSpan = role => {
+        const span = document.createElement('span');
+        span.textContent = roles[role].icon;
+        span.title = roles[role].title;
+        return span;
+    };
+
+    const getSortingFn = friendsList => (nameA, nameB) => {
+        if (FRIENDS_ON_TOP) {
+            if (friendsList.includes(nameA) && friendsList.includes(nameB)) return nameA.localeCompare(nameB);
+            if (friendsList.includes(nameA)) return -1;
+            if (friendsList.includes(nameB)) return 1;
+        }
+        return nameA.localeCompare(nameB);
+    };
+
+    /** Freunde lesen (für Highlight/Sortierung) */
+    const getFriendsList = () =>
+        fetch('/freunde')
+            .then(res => res.text())
+            .then(html =>
+                Array.from(
+                    new DOMParser()
+                        .parseFromString(html, 'text/html')
+                        .querySelectorAll('table tbody tr td a[href^="/profile/"]')
+                ).map(a => a.textContent.trim())
+            );
+
+    /** Map enthält mindestens einen Wert > 0? */
+    const hasAnyValue = map => { for (const v of map.values()) if (Number.isFinite(v) && v > 0) return true; return false; };
+
+    /**
+     * ROBUST: zählt je user_id aktuell offene Freigaben aus
+     *  - Verband (#mission_list_alliance)
+     *  - SiWa (#mission_list_sicherheitswache_alliance | #mission_list_sicherheitswache)
+     *  - optional Event
+     * wartet kurz, bis UW.mission_markers befüllt ist
+     */
+    const getReleasesMap = async () => {
+        vbpLog('getReleasesMap() start');
+
+        // warte bis Marker verfügbar sind (max ~5s)
+        let tries = 50;
+        while ((!Array.isArray(UW.mission_markers) || UW.mission_markers.length === 0) && tries-- > 0) {
+            await new Promise(r => setTimeout(r, 100));
+        }
+        vbpLog('mission_markers nach Warten:', Array.isArray(UW.mission_markers) ? UW.mission_markers.length : 'keine');
+
+        const listIds = [
+            'mission_list_alliance',
+            INCLUDE_SIWA ? 'mission_list_sicherheitswache_alliance' : null,
+            INCLUDE_SIWA ? 'mission_list_sicherheitswache' : null,
+            INCLUDE_EVENT ? 'mission_list_alliance_event' : null,
+        ].filter(Boolean);
+
+        const collectMissionIds = id => {
+            const root = document.getElementById(id);
+            if (!root) { vbpWarn('Liste nicht gefunden:', id); return []; }
+            const ids = Array.from(root.querySelectorAll('.missionSideBarEntry:not(.mission_deleted)'))
+                .map(el => el.getAttribute('mission_id'))
+                .filter(Boolean)
+                .map(String);
+            vbpLog('Liste', id, '->', ids.length, 'Missionen');
+            return ids;
+        };
+
+        const allMissionIds = new Set(listIds.flatMap(collectMissionIds));
+        vbpLog('Summe Missionen in (VB+SiWa[+Event]):', allMissionIds.size);
+
+        const markers = Array.isArray(UW.mission_markers) ? UW.mission_markers : [];
+        vbpLog('mission_markers length:', markers.length);
+        if (!markers.length) vbpWarn('Keine mission_markers – Besitzerzuordnung evtl. noch nicht geladen');
+
+        // mission_id -> user_id
+        const missionIdToOwner = new Map();
+        for (const m of markers) {
+            if (!m) continue;
+            const mid = m.mission_id != null ? String(m.mission_id) : null;
+            if (!mid) continue;
+            missionIdToOwner.set(mid, m.user_id ?? null);
+        }
+
+        const counts = new Map(); // userId -> number
+        for (const mid of allMissionIds) {
+            const uid = missionIdToOwner.get(mid);
+            if (uid == null) continue;
+            if (!COUNT_OWN_RELEASES && uid === UW.user_id) continue;
+            counts.set(String(uid), (counts.get(String(uid)) ?? 0) + 1);
+        }
+
+        vbpLog('Anzahl Spieler mit >=1 Freigabe:', counts.size);
+        return counts;
+    };
+
+    /**
+     * Auto-Refresh:
+     * - sofortiger Fill
+     * - MutationObserver auf den relevanten Listen
+     * - sanfter Poll (alle 2s für max. 30s)
+     * - Marker-Watcher (bis 60s)
+     * - Highlight & Resort nach jedem Fill
+     */
+    const wireFreigabenAutoRefresh = (releaseCells, tableBody) => {
+        const resortRowsByReleases = () => {
+            const rows = Array.from(tableBody.querySelectorAll('tr'));
+            rows.sort((a, b) => {
+                const ca = Number(a.dataset.releasesCount || 0);
+                const cb = Number(b.dataset.releasesCount || 0);
+                if (cb !== ca) return cb - ca; // mehr Freigaben zuerst
+                return (a.dataset.userName || '').localeCompare(b.dataset.userName || '');
+            });
+            rows.forEach(r => tableBody.appendChild(r));
+        };
+
+        const fillOnce = async () => {
+            try {
+                const map = await getReleasesMap();
+                let filled = 0;
+                for (const [userId, cell] of releaseCells) {
+                    const row = cell.closest('tr');
+                    const val = map.get(userId);
+                    const count = Number.isFinite(val) ? Number(val) : 0;
+
+                    cell.textContent = String(count);
+                    row.dataset.releasesCount = String(count);
+
+                    if (count > 0) {
+                        row.classList.add('vbp-has-releases');
+                        cell.classList.add('vbp-rel');
+                    } else {
+                        row.classList.remove('vbp-has-releases');
+                        cell.classList.remove('vbp-rel');
+                    }
+                    filled++;
+                }
+                resortRowsByReleases();
+                vbpLog('fillOnce: gefüllt:', filled, '/', releaseCells.size);
+                return map;
+            } catch (e) {
+                vbpWarn('fillOnce Fehler:', e);
+                for (const [, cell] of releaseCells) {
+                    const row = cell.closest('tr');
+                    cell.textContent = '0';
+                    row.dataset.releasesCount = '0';
+                    row.classList.remove('vbp-has-releases');
+                    cell.classList.remove('vbp-rel');
+                }
+                resortRowsByReleases();
+                return new Map();
+            }
+        };
+
+        // 1) sofort
+        fillOnce().then(map => {
+            // 2) sanfter Poll, falls noch nix da
+            if (!hasAnyValue(map)) {
+                vbpLog('keine Werte > 0 -> starte sanften Poll');
+                let left = 15; // 15*2s = 30s
+                const int = setInterval(async () => {
+                    const m = await fillOnce();
+                    if (hasAnyValue(m) || --left <= 0) { clearInterval(int); vbpLog('Poll Ende'); }
+                }, 2000);
+            }
+        });
+
+        // 3) DOM-Änderungen in relevanten Listen
+        const listIds = [
+            'mission_list_alliance',
+            'mission_list_sicherheitswache_alliance',
+            'mission_list_sicherheitswache',
+            // 'mission_list_alliance_event',
+        ];
+        const observer = new MutationObserver(() => { vbpLog('Mutation erkannt -> refill'); fillOnce(); });
+        listIds.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) observer.observe(el, { childList: true, subtree: true });
+            else vbpWarn('Observer: Liste fehlt:', id);
+        });
+
+        // 4) mission_markers Änderungen (max 60s)
+        let lastLen = Array.isArray(UW.mission_markers) ? UW.mission_markers.length : 0;
+        const markersInt = setInterval(() => {
+            const len = Array.isArray(UW.mission_markers) ? UW.mission_markers.length : 0;
+            if (len !== lastLen) { vbpLog('mission_markers geändert:', lastLen, '->', len); lastLen = len; fillOnce(); }
+        }, 1000);
+        setTimeout(() => { clearInterval(markersInt); vbpLog('markers watcher off'); }, 60000);
+    };
+
+    // ---------- UI/Einbindung ----------
+    const bigMapMenu = document.querySelector('#bigMapMenu'); // nur EINMAL deklarieren!
+
+    const prefix = `s${crypto.randomUUID()}`;
+    const bigmapStorageKey = 'alliance_members_outer';
+
+    const filterStyle = document.createElement('style');
+    const offlineStyle = document.createElement('style');
+    const highlightStyle = document.createElement('style');
+    highlightStyle.textContent = `
+  /* grüne Hervorhebung pro Zelle, gewinnt gegen table-striped */
+  .vbp-members tbody tr.vbp-has-releases > td {
+    background-color: rgba(46, 204, 113, 0.18) !important;
+    background-image: none !important;
+  }
+  /* Zahl fett + grün einfärben */
+  .vbp-members tbody td.vbp-rel {
+    font-weight: 700;
+    color: #2ecc71;
+  }
+`;
+
+    document.head.append(filterStyle, offlineStyle, highlightStyle);
+
+    const panel = document.createElement('div');
+    panel.classList.add('panel', 'panel-default');
+
+    const panelHeading = document.createElement('div');
+    panelHeading.classList.add('panel-heading', 'big_map_window_head');
+    panelHeading.style.setProperty('display', 'flex');
+    panelHeading.style.setProperty('flex-flow', 'wrap');
+
+    const panelTitle = document.createElement('span');
+    panelTitle.id = `${prefix}_panel_title`;
+    panelTitle.textContent = 'Verbandsmitglieder';
+
+    const search = document.createElement('input');
+    search.classList.add('search_input_field');
+    search.style.setProperty('flex-grow', '1');
+    search.style.setProperty('font-size', '12px');
+    search.style.setProperty('border', '1px solid #ccc'); // fix
+    search.style.setProperty('border-radius', '4px');
+    search.style.setProperty('margin-left', '1em');
+
+    search.addEventListener('keyup', () => {
+        const filter = search.value.trim().toLowerCase();
+        filterStyle.textContent = filter
+            ? `#${tableBody.id} tr:not([data-user-name*="${filter}"i]) { display: none; }`
+            : '';
+    });
+
+    panelHeading.append(panelTitle, search);
+
+    const panelBody = document.createElement('div');
+    panelBody.classList.add('panel-body');
+    if (!bigMapMenu) {
+        panelBody.style.setProperty('height', '500px');
+        panelBody.style.setProperty('max-height', '500px');
+        panelBody.style.setProperty('overflow', 'auto');
+    }
+
+    const table = document.createElement('table');
+    table.classList.add('table', 'table-striped', 'table-hover', 'table-condensed', 'vbp-members');
+
+    const tableBody = document.createElement('tbody');
+    tableBody.id = `${prefix}_table_body`;
+    table.append(tableBody);
+
+    const countdownSpan = document.createElement('span');
+    countdownSpan.id = `${prefix}_countdown`;
+    countdownSpan.classList.add('text-muted', 'pull-right');
+    countdownSpan.textContent = '0:00';
+    countdownSpan.style.setProperty('position', 'absolute');
+    countdownSpan.style.setProperty('right', 'calc(3ch + 1em)');
+
+    const offlineBtn = document.createElement('button');
+    offlineBtn.classList.add('btn', 'btn-default', 'btn-xs');
+    offlineBtn.style.setProperty('position', 'absolute');
+    offlineBtn.style.setProperty('right', 'calc(3ch + 1em)');
+    offlineBtn.style.setProperty('transform', 'translateY(100%)');
+    const offlineImg = document.createElement('img');
+    offlineImg.src = '/images/user_gray.png';
+    offlineBtn.append(offlineImg);
+
+    offlineBtn.addEventListener('click', () => {
+        const offline = offlineStyle.textContent;
+        offlineStyle.textContent = offline ? '' : (`#${tableBody.id} tr[data-online="false"] { display: none; }`);
+    });
+    offlineBtn.click();
+
+    panelBody.append(countdownSpan, offlineBtn, table);
+    panel.append(panelHeading, panelBody);
+
+    const wrapper = document.createElement('div');
+    wrapper.id = 'alliance_members_outer';
+    wrapper.classList.add('overview_outer', 'bigMapWindow');
+    wrapper.append(panel);
+
+    const widthClasses = [1,2,3,4,5,6,7,8,9,10,11,12].map(c => `col-sm-${c}`);
+
+    const mapMode = () => {
+        wrapper.classList.remove(...widthClasses);
+        wrapper.classList.add('col-sm-3');
+        document.getElementById('buildings_outer')?.classList.remove(...widthClasses);
+        document.getElementById('buildings_outer')?.classList.add('col-sm-3');
+        document.getElementById('chat_outer')?.classList.remove(...widthClasses);
+        document.getElementById('chat_outer')?.classList.add('col-sm-3');
+        document.getElementById('radio_outer')?.classList.remove(...widthClasses);
+        document.getElementById('radio_outer')?.classList.add('col-sm-3');
+    };
+
+    const noMapMode = () => {
+        wrapper.classList.remove(...widthClasses);
+        wrapper.classList.add('col-sm-6');
+        document.getElementById('buildings_outer')?.classList.remove(...widthClasses);
+        document.getElementById('buildings_outer')?.classList.add('col-sm-4');
+        document.getElementById('chat_outer')?.classList.remove(...widthClasses);
+        document.getElementById('chat_outer')?.classList.add('col-sm-4');
+        document.getElementById('radio_outer')?.classList.remove(...widthClasses);
+        document.getElementById('radio_outer')?.classList.add('col-sm-6');
+    };
+
+    // Einbindung
+    if (MODE === 'own' || bigMapMenu) {
+        if (MODE === 'own') {
+            if (UW.mapViewExpanded) noMapMode();
+            else mapMode();
+
+            const expandOrig = UW.mapExpand;
+            UW.mapExpand = (...args) => { noMapMode(); return expandOrig?.(...args); };
+
+            const restoreOrig = UW.mapViewRestore;
+            UW.mapViewRestore = (...args) => { mapMode(); return restoreOrig?.(...args); };
+        }
+
+        document.getElementById('radio_outer')?.after(wrapper);
+
+        if (bigMapMenu) {
+            const menuBtn = document.createElement('img');
+            menuBtn.src = '/images/alliance.svg';
+            menuBtn.classList.add('bigMapMenuButton');
+            menuBtn.addEventListener('click', () =>
+                UW.bigMapMenuOpenClose(UW.$(wrapper))
+            );
+
+            wrapper.style.setProperty('position', 'absolute');
+            wrapper.style.setProperty('padding', '0');
+            wrapper.style.setProperty('border', '2px solid #c9302c');
+            wrapper.style.setProperty('overflow', 'hidden');
+
+            panel.style.setProperty('height', '100%');
+            panel.style.setProperty('margin', '0');
+            panel.style.setProperty('overflow', 'auto');
+
+            panelHeading.style.setProperty('border', 'none');
+            panelHeading.style.setProperty('padding', '5px');
+            panelHeading.style.setProperty('background-color', '#424242');
+            panelHeading.style.setProperty('color', 'white');
+            panelHeading.style.setProperty('margin', '0');
+            panelHeading.style.setProperty('background-image', 'none');
+            panelHeading.style.setProperty('border-radius', '0');
+
+            UW
+                .$(wrapper)
+                .draggable(UW.$('#missions_outer').draggable('option'))
+                .resizable(UW.$('#missions_outer').resizable('option'));
+
+            bigMapMenu.append(menuBtn);
+            bigMapMenu.style.setProperty('width', '280px');
+            Array.from(bigMapMenu.childNodes).filter(n => n.nodeType === 3).forEach(n => n.remove());
+
+            const bigMapWindowPositionSaveOrig = UW.bigMapWindowPositionSave;
+            UW.bigMapWindowPositionSave = () => {
+                bigMapWindowPositionSaveOrig?.();
+                localStorage.setItem(
+                    bigmapStorageKey,
+                    JSON.stringify(UW.bigMapWindowPositionGet(UW.$(wrapper)))
+                );
+            };
+
+            if (bigmapStorageKey in localStorage) {
+                UW.bigMapWindowPositionRestoreWindow(
+                    UW.$(wrapper),
+                    JSON.parse(localStorage.getItem(bigmapStorageKey))
+                );
+            }
+        }
+    } else {
+        wrapper.classList.add('col-sm-4', 'hidden');
+        const switchWrapper = document.querySelector(`#${MODE}_outer`);
+        if (switchWrapper) {
+            const heading = switchWrapper.querySelector('.panel-heading');
+            const toggleBtn = document.createElement('button');
+            toggleBtn.classList.add('btn', 'btn-default', 'btn-xs', 'pull-right');
+            const offlineImg2 = document.createElement('img');
+            offlineImg2.src = '/images/user_green.png';
+            const toggleSpan = document.createElement('span');
+            toggleSpan.classList.add('hidden', 'glyphicon', 'glyphicon-remove');
+            toggleBtn.append(offlineImg2, toggleSpan);
+
+            const toggleWrapper =
+                MODE === 'chat' ? heading?.querySelector('.btn-group')
+                                : heading?.querySelector('.flex-fixed-size');
+
+            const addToWrapper = () => {
+                if (MODE === 'chat') toggleWrapper.append(toggleBtn);
+                else { toggleBtn.classList.add('flex-fixed-size'); toggleWrapper.before(toggleBtn); }
+            };
+
+            addToWrapper();
+            switchWrapper.after(wrapper);
+
+            toggleBtn.addEventListener('click', () => {
+                switchWrapper.classList.toggle('hidden');
+                wrapper.classList.toggle('hidden');
+
+                if (wrapper.classList.contains('hidden')) {
+                    addToWrapper();
+                    offlineImg2.classList.remove('hidden');
+                    toggleSpan.classList.add('hidden');
+                } else {
+                    offlineImg2.classList.add('hidden');
+                    toggleSpan.classList.remove('hidden');
+                    panelHeading.append(toggleBtn);
+                }
+            });
+        }
+    }
+
+    // ---------- Rendering + Updates ----------
+    const updateMembersList = () => {
+        sharedAPIStorage
+            .getAllianceMembers()
+            .then(users => {
+                if (HIGHLIGHT_FRIENDS || FRIENDS_ON_TOP) {
+                    return getFriendsList().then(friendsList => [users, friendsList]);
+                }
+                return [users, []];
+            })
+            .then(([users, friendsList]) => {
+                // Tabelle leeren
+                tableBody.replaceChildren();
+
+                let onlineCounter = 0;
+                const sortingFn = getSortingFn(friendsList);
+
+                // Merker für Freigaben-Zellen (userId -> <td>)
+                const releaseCells = new Map();
+
+                users
+                    .sort(({ name: a }, { name: b }) => sortingFn(a, b))
+                    .forEach(user => {
+                        const row = tableBody.insertRow();
+
+                        // Status-Icon
+                        const iconCell = row.insertCell();
+                        const icon = document.createElement('img');
+                        icon.src = `/images/user_${['gray', 'green'][Number(user.online)]}.png`;
+                        iconCell.append(icon);
+
+                        // Name
+                        const nameCell = row.insertCell();
+                        const link = document.createElement('a');
+                        link.classList.add('lightbox-open');
+                        link.href = `/profile/${user.id}`;
+                        link.textContent = user.name;
+                        if (HIGHLIGHT_FRIENDS && friendsList.includes(user.name)) {
+                            link.textContent = `🫂 ${link.textContent}`;
+                        }
+                        nameCell.append(link);
+
+                        // Freigaben
+                        const relCell = row.insertCell();
+                        relCell.textContent = '…';
+                        relCell.title = 'Aktuell freigegebene Einsätze (Verband + SiWa)';
+                        relCell.style.whiteSpace = 'nowrap';
+                        releaseCells.set(String(user.id), relCell);
+
+                        // Rollen
+                        if (user.role_flags.admin) {
+                            row.insertCell().append(createRoleFlagSpan('admin'));
+                        } else {
+                            row.insertCell().append(
+                                ...Object.keys(user.role_flags)
+                                    .filter(role => user.role_flags[role])
+                                    .sort()
+                                    .map(createRoleFlagSpan)
+                            );
+                        }
+
+                        row.dataset.online = user.online;
+                        row.dataset.userName = user.name;
+                        if (user.online) onlineCounter++;
+                    });
+
+                panelTitle.textContent = `Verbandsmitglieder (${onlineCounter}/${users.length})`;
+
+                // Freigaben-Spalte automatisch befüllen + sortieren + highlighten
+                vbpLog('wireFreigabenAutoRefresh start, cells:', releaseCells.size);
+                wireFreigabenAutoRefresh(releaseCells, tableBody);
+            })
+            .then(() => {
+                let countdown = 5 * 60; // 5 Minuten
+                const updateCountdown = setInterval(() => {
+                    countdown--;
+                    countdownSpan.textContent = `${Math.floor(countdown / 60)}:${(countdown % 60).toString().padStart(2, '0')}`;
+                    if (countdown === 0) {
+                        clearInterval(updateCountdown);
+                        updateMembersList();
+                    }
+                }, 1000);
+            });
+    };
+
+    // Start
+    updateMembersList();
+
+    // Live-Refresh bei neuen/gelöschten Missionen
+    try {
+        const mmAddOrig = UW.missionMarkerAdd;
+        UW.missionMarkerAdd = (...args) => {
+            const r = typeof mmAddOrig === 'function' ? mmAddOrig(...args) : undefined;
+            clearTimeout(UW.__allianceMembersRefreshTimer);
+            UW.__allianceMembersRefreshTimer = setTimeout(() => updateMembersList(), 150);
+            return r;
+        };
+    } catch {}
+    try {
+        const mDelOrig = UW.missionDelete;
+        UW.missionDelete = (...args) => {
+            const r = typeof mDelOrig === 'function' ? mDelOrig(...args) : undefined;
+            clearTimeout(UW.__allianceMembersRefreshTimer);
+            UW.__allianceMembersRefreshTimer = setTimeout(() => updateMembersList(), 150);
+            return r;
+        };
+    } catch {}
+})();
