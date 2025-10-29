@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Leitstelle De-/Activate Extensions
 // @namespace    http://tampermonkey.net/
-// @version      2.4.1
+// @version      2.5.0
 // @description  (De)aktiviert Erweiterungen Leitstellenweise, bearbeitet nur Erweiterungen die in config konfiguriert wurden
 // @author       Silberfighter & NilsPe
 // @match        https://www.leitstellenspiel.de/buildings*
@@ -21,24 +21,35 @@
         "Fachgruppe Räumen",
         "Fachgruppe Wasserschaden/Pumpen",
         "Fachgruppe Schwere Bergung",
-        "Fachzug Führung und Kommunikation"
+        "Fachzug Führung und Kommunikation",
+        "2. Technischer Zug - Bergungsgruppe"
       ],
       action: "aktivieren",
       color: "success"
-    }
+    },
     // Beispiel für Deaktivieren:
-    // {
-    //   label: "Erweiterungen deaktivieren",
-    //   keywords: ["Zelle"],
-    //   action: "deaktivieren",
-    //   color: "danger"
-    // }
+     {
+       label: "Erweiterungen deaktivieren",
+       keywords: [
+        "1. Technischer Zug: Fachgruppe Notversorgung/Notinstandsetzung",
+        "1. Technischer Zug: Zugtrupp",
+        "Fachgruppe Räumen",
+        "Fachgruppe Wasserschaden/Pumpen",
+        "Fachgruppe Schwere Bergung",
+        "Fachzug Führung und Kommunikation",
+        "2. Technischer Zug - Bergungsgruppe"
+  ],
+       action: "deaktivieren",
+       color: "danger"
+     }
   ];
 
   //Hilfsfunktionen
   const delay = (ms) => new Promise(r => setTimeout(r, ms));
   const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
   const getCsrf = () => document.querySelector('meta[name="csrf-token"]')?.content || "";
+  const btnTxt = el => ((el?.textContent) || '').toLowerCase().replace(/\s+/g,' ').trim();
+
 
   async function postWithCsrf(url) {
     const csrf = getCsrf();
@@ -98,19 +109,14 @@
         });
 
         //Nur die Erweiterungen, die geändert werden müssen werden ausgewählt
-        const toChange = rows.filter(row => {
+          const toChange = rows.filter(row => {
+              const link = row.querySelector('a.btn[data-method="post"][href*="/extension_ready/"]');
+              if (!link) return false;
+              const t = btnTxt(link); // "einsatzbereit" oder "nicht einsatzbereit"
+              return (cfg.action === "aktivieren" && t === "einsatzbereit") ||
+                  (cfg.action === "deaktivieren" && t === "nicht einsatzbereit");
+          });
 
-          const link = Array.from(row.querySelectorAll('a.btn'))
-            .find(a => {
-              const t = (a.textContent || "").trim();
-              return t === "Einsatzbereit" || t === "Nicht einsatzbereit";
-            });
-          if (!link) return false;
-
-          const t = (link.textContent || "").trim();
-          return (cfg.action === "aktivieren" && t === "Einsatzbereit") ||
-                 (cfg.action === "deaktivieren" && t === "Nicht einsatzbereit");
-        });
 
         const total = toChange.length;
         let done = 0;
@@ -124,25 +130,27 @@
 
         status.textContent = `0 / ${total} … läuft`;
 
-        for (const row of toChange) {
-          const link = Array.from(row.querySelectorAll('a.btn'))
-            .find(a => {
-              const t = (a.textContent || "").trim();
-              return (cfg.action === "aktivieren" && t === "Einsatzbereit") ||
-                     (cfg.action === "deaktivieren" && t === "Nicht einsatzbereit");
-            });
-          if (!link) continue;
+          for (const row of toChange) {
+              const link = row.querySelector('a.btn[data-method="post"][href*="/extension_ready/"]');
+              if (!link) continue;
 
-          try {
-            const ok = await postWithCsrf(link.href);
-            if (ok) done++;
-          } catch (e) {
-            console.warn("POST fehlgeschlagen:", link?.href, e);
+              const t = btnTxt(link);
+              const shouldClick =
+                    (cfg.action === "aktivieren" && t === "einsatzbereit") ||
+                    (cfg.action === "deaktivieren" && t === "nicht einsatzbereit");
+              if (!shouldClick) continue;
+
+              try {
+                  const ok = await postWithCsrf(link.href);
+                  if (ok) done++;
+              } catch (e) {
+                  console.warn("POST fehlgeschlagen:", link?.href, e);
+              }
+
+              status.textContent = `${done} / ${total} … läuft`;
+              await delay(200);
           }
 
-          status.textContent = `${done} / ${total} … läuft`;
-          await delay(200);
-        }
 
         status.textContent = `✔ Fertig (${done} / ${total})`;
         status.style.color = 'green';
