@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Leitstelle Change Vehicle max personal + Settings
+// @name         Leitstelle Change Vehicle max personal
 // @namespace    NilsPe.vehicle.maxpersonal
 // @version      6.0.1
 // @description  Setzt pro Fahrzeugtyp die maximale Personenanzahl. Mit zentraler Einstellungsseite, Fortschrittsbalken
