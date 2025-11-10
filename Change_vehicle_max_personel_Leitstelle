@@ -1,103 +1,425 @@
 // ==UserScript==
-// @name         LS Change Vehicle max personel
-// @namespace    http://tampermonkey.net/
-// @version      5
-// @description  Ändert die maximale Personenanzahl für alle Fahrzeuge (egal ob in einer Wache oder Leitstelle) mit einem Klick, inkl. Fortschrittsanzeige. Button wird automatisch nachgeladen, wenn die Fahrzeugliste geöffnet wird, Reload nach 5 Sekunden Verzögerung.
-// @author       Silberfighter & NilsPe
-// @include      https://www.leitstellenspiel.de/buildings/*
-// @icon         https://www.google.com/s2/favicons?sz=64&domain=leitstellenspiel.de
-// @grant        none
+// @name         Leitstelle Change Vehicle max personal + Settings
+// @namespace    NilsPe.vehicle.maxpersonal
+// @version      6.0.0
+// @description  Setzt pro Fahrzeugtyp die maximale Personenanzahl. Mit zentraler Einstellungsseite, Fortschrittsbalken und Button mit Zahnrad. Auto-Reinject bei dynamischen Listen.
+// @author       NilsPe & Silberfighter
+// @match        https://*.leitstellenspiel.de/buildings/*
+// @match        https://*.leitstellenspiel.de/settings/index*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @require      https://update.greasyfork.org/scripts/528065/Skripteinstellungen.user.js
 // ==/UserScript==
 
-(async function() {
-    // Einträge: [vehicleTypeId, maxPersonal]
-    var vehicleTypeIdToClassName = [
-        [35, 1],
-        [50, 1],
-        [72, 5],
-        [79, 1],
-        [80, 1],
-        [81, 1],
-        [82, 1],
-        [94, 1],
-        [52, 1],
-    ];
+(async function () {
+  'use strict';
 
-    // prüft regelmäßig, ob die Tabelle existiert und der Button fehlt
-    function addButtonIfMissing() {
-        if ($("#vehicle_table").length && !$("#changeMaxPerson").length) {
-            $("#vehicle_table").before(`
-                <a class="btn btn-success btn-xs" id="changeMaxPerson">
-                    ändern der max Personen
-                </a>
-                <div id="changeStatus" style="margin-top:5px; font-weight:bold;"></div>
-            `);
+  /**
+   * ————————————————————————————————————————
+   *  KONFIG: Fahrzeugtypen-Liste (alphabetisch)
+   * ————————————————————————————————————————
+   */
+  const VEHICLE_TYPES = [
+    { id: 108, label: 'AB-L' },
+    { id: 116, label: 'AB-Lüfter' },
+    { id: 119, label: 'AB-Lösch' },
+    { id: 71, label: 'AB-MZB' },
+    { id: 164, label: 'AB Schiene' },
+    { id: 48, label: 'AB-Atemschutz' },
+    { id: 54, label: 'AB-Dekon-P' },
+    { id: 77, label: 'AB-Gefahrgut' },
+    { id: 78, label: 'AB-Einsatzleitung' },
+    { id: 47, label: 'AB-Rüst' },
+    { id: 117, label: 'AB-Tank' },
+    { id: 169, label: 'AB-Sonderlöschmittel' },
+    { id: 170, label: 'AB-Wasser/Schaum' },
+    { id: 102, label: 'Anh 7' },
+    { id: 178, label: 'Anh 12 Lbw (FGr Log-V)' },
+    { id: 44, label: 'Anh DLE' },
+    { id: 146, label: 'Anh FüLa' },
+    { id: 92, label: 'Anh Hund' },
+    { id: 115, label: 'Anh Lüfter' },
+    { id: 68, label: 'Anh MzAB' },
+    { id: 66, label: 'Anh MzB' },
+    { id: 136, label: 'Anh Pferdetransport' },
+    { id: 143, label: 'Anh Schlauch' },
+    { id: 67, label: 'Anh SchlB' },
+    { id: 168, label: 'Anh Sonderlöschmittel' },
+    { id: 101, label: 'Anh SwPu' },
+    { id: 174, label: 'Anh TeSi' },
+    { id: 155, label: 'Anh Höhenrettung (Bergrettung)' },
+    { id: 43, label: 'BrmG R' },
+    { id: 94, label: 'DhuFüKw' },
+    { id: 2, label: 'DLK 23' },
+    { id: 3, label: 'ELW 1' },
+    { id: 128, label: 'ELW 1 Drohne' },
+    { id: 59, label: 'ELW 1 (SEG)' },
+    { id: 34, label: 'ELW 2' },
+    { id: 129, label: 'ELW 2 Drohne' },
+    { id: 151, label: 'ELW Bergrettung' },
+    { id: 141, label: 'FKH (Feuerwehr)' },
+    { id: 132, label: 'FKH' },
+    { id: 75, label: 'FLF' },
+    { id: 32, label: 'FuStW' },
+    { id: 103, label: 'FuStW (DGL)' },
+    { id: 52, label: 'GefKw' },
+    { id: 39, label: 'GKW' },
+    { id: 27, label: 'GW-Gefahrgut' },
+    { id: 5, label: 'GW-A' },
+    { id: 149, label: 'GW Bergrettung (NEF)' },
+    { id: 150, label: 'GW Bergrettung' },
+    { id: 33, label: 'GW-Höhenrettung' },
+    { id: 158, label: 'GW-Höhenrettung (Bergrettung)' },
+    { id: 104, label: 'GW-L1' },
+    { id: 105, label: 'GW-L2' },
+    { id: 12, label: 'GW-Messtechnik' },
+    { id: 60, label: 'GW-San' },
+    { id: 63, label: 'GW-Taucher' },
+    { id: 138, label: 'GW-Verpflegung' },
+    { id: 64, label: 'GW-Wasserrettung' },
+    { id: 83, label: 'GW-Werkfeuerwehr' },
+    { id: 145, label: 'FüKomKW' },
+    { id: 51, label: 'FüKw' },
+    { id: 144, label: 'FüKW (THW)' },
+    { id: 61, label: 'Polizeihubschrauber' },
+    { id: 156, label: 'Polizeihubschrauber mit verbauter Winde' },
+    { id: 95, label: 'Polizeimotorrad' },
+    { id: 165, label: 'LauKW' },
+    { id: 0, label: 'LF 20' },
+    { id: 7, label: 'LF 20/16' },
+    { id: 1, label: 'LF 10' },
+    { id: 8, label: 'LF 10/6' },
+    { id: 9, label: 'LF 16-TS' },
+    { id: 172, label: 'LKW Technik' },
+    { id: 65, label: 'LKW 7 Lkr 19 tm' },
+    { id: 122, label: 'LKW 7 Lbw (FGr E)' },
+    { id: 123, label: 'LKW 7 Lbw (FGr WP)' },
+    { id: 176, label: 'LKW 7 Lbw (FGr Log-V)' },
+    { id: 100, label: 'MLW 4' },
+    { id: 45, label: 'MLW 5' },
+    { id: 89, label: 'MLF' },
+    { id: 36, label: 'MTW' },
+    { id: 148, label: 'MTW-FGr K' },
+    { id: 177, label: 'MTW-FGr Log-V' },
+    { id: 124, label: 'MTW-OV' },
+    { id: 93, label: 'MTW-O' },
+    { id: 173, label: 'MTW TeSi' },
+    { id: 125, label: 'MTW-TR UL(Drohne)' },
+    { id: 140, label: 'MTW-Verpflegung' },
+    { id: 74, label: 'NAW' },
+    { id: 175, label: 'NEA 50' },
+    { id: 111, label: 'NEA50 (FW)' },
+    { id: 110, label: 'NEA50 (THW)' },
+    { id: 113, label: 'NEA200 (FW)' },
+    { id: 112, label: 'NEA200 (THW)' },
+    { id: 29, label: 'NEF' },
+    { id: 161, label: 'Hubschrauber (Seenotrettung)' },
+    { id: 61, label: 'Polizeihubschrauber' },
+    { id: 156, label: 'Polizeihubschrauber mit verbauter Winde' },
+    { id: 95, label: 'Polizeimotorrad' },
+    { id: 166, label: 'PTLF 4000' },
+    { id: 134, label: 'Pferdetransporter klein' },
+    { id: 135, label: 'Pferdetransporter groß' },
+    { id: 157, label: 'RTH Winde' },
+    { id: 28, label: 'RTW' },
+    { id: 160, label: 'Seenotrettungsboot' },
+    { id: 159, label: 'Seenotrettungskreuzer' },
+    { id: 167, label: 'SLF' },
+    { id: 154, label: 'Schneefahrzeug' },
+    { id: 78, label: 'AB-Einsatzleitung' },
+    { id: 50, label: 'GruKw' },
+    { id: 57, label: 'FwK' },
+    { id: 75, label: 'FLF' },
+    { id: 86, label: 'Turbolöscher' },
+    { id: 87, label: 'TLF 4000' },
+    { id: 26, label: 'TLF 16' },
+    { id: 21, label: 'TLF 16/24-Tr' },
+    { id: 22, label: 'TLF 16/25' },
+    { id: 23, label: 'TLF 16/45' },
+    { id: 17, label: 'TLF 2000' },
+    { id: 18, label: 'TLF 3000' },
+    { id: 24, label: 'TLF 20/40' },
+    { id: 25, label: 'TLF 20/40-SL' },
+    { id: 20, label: 'TLF 8/18' },
+    { id: 19, label: 'TLF 8/8' },
+    { id: 151, label: 'ELW Bergrettung' },
+    { id: 36, label: 'MTW' },
+    { id: 40, label: 'MTW-TZ' },
+    { id: 172, label: 'LKW Technik' },
+    { id: 42, label: 'LKW K 9' },
+    { id: 65, label: 'LKW 7 Lkr 19 tm' },
+    { id: 122, label: 'LKW 7 Lbw (FGr E)' },
+    { id: 123, label: 'LKW 7 Lbw (FGr WP)' },
+    { id: 176, label: 'LKW 7 Lbw (FGr Log-V)' }
+  ];
 
-            $("#changeMaxPerson").on("click", function() {
-                getRelevantVehicles();
-            });
-        }
+  // Keys für Settings
+  const SETTINGS_IDENTIFIER = 'vehicle_max_personal';
+  const KEY_PREFIX = 'vmp_target_'; // pro Fahrzeugtyp
+  const KEY_DELAY_POST = 'vmp_delay_post_ms';
+  const DEFAULT_DELAY_POST = 100; // Standard 100ms
+
+  // UI-Run-Flag
+  const RUN_FLAG = 'vmp_run_flag';
+
+  // Helpers
+  const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+  const $metaCSRF = () => document.querySelector("meta[name='csrf-token']")?.getAttribute('content') || '';
+
+  // ---- Cache ----
+  let TARGETS_CACHE = null;
+  let DELAY_CACHE = null;
+  async function primeCache(rows) {
+    // Delay nur einmal laden
+    const rawDelay = await GM_getValue(KEY_DELAY_POST);
+    DELAY_CACHE = Number(rawDelay ?? DEFAULT_DELAY_POST) || 0;
+
+    // Alle in der Tabelle vorkommenden Fahrzeug-Typen
+    const typeIds = Array.from(new Set(rows.map(getVehicleTypeID)));
+    const values = await Promise.all(
+      typeIds.map(id => GM_getValue(KEY_PREFIX + String(id)))
+    );
+    TARGETS_CACHE = new Map();
+    typeIds.forEach((id, i) => {
+      TARGETS_CACHE.set(id, Number(values[i] ?? 0) || 0);
+    });
+  }
+  function getTargetCached(typeId) {
+    return TARGETS_CACHE?.get(typeId) || 0;
+  }
+
+  // ————————————————————————————————————————
+  // Einstellungsseite (/settings/index)
+  // ————————————————————————————————————————
+  if (location.pathname.startsWith('/settings/index')) {
+    const typeInputs = VEHICLE_TYPES.map((t) => ({
+      type: 'number',
+      key: KEY_PREFIX + String(t.id),
+      default: 0,
+      min: 0,
+      max: 50,
+      label: `${t.label}`
+    }));
+
+  await addOptions({
+    identifier: SETTINGS_IDENTIFIER,
+      title: 'Max. Personal Fahrzeuge',
+      settings: [
+      { type: 'header', text: 'Werte je Fahrzeug' },
+      ...typeInputs,
+      { type: 'header', text: 'Ablauf' },
+      { type: 'number', key: KEY_DELAY_POST, default: DEFAULT_DELAY_POST, min: 0, max: 5000, label: 'Delay zwischen Änderungen [ms]' },
+    ]
+  });
+  return;
+  }
+
+  // ————————————————————————————————————————
+  // Fortschritts-Navbar (unten fix)
+  // ————————————————————————————————————————
+  function ensureStyles() {
+    if (document.getElementById('vmp-style')) return;
+    const s = document.createElement('style');
+    s.id = 'vmp-style';
+    s.textContent = `
+      #vmp-nav { position: fixed; left:0; right:0; bottom:0; background:#f8f8f8; border-top:1px solid #e7e7e7; z-index:2147483000; padding:6px 10px; }
+      body.vmp-hasbar { padding-bottom: 40px !important; }
+      #vmp-wrap { display:flex; align-items:center; gap:12px; }
+      #vmp-state { min-width:260px; font-size:13px; }
+      #vmp-progress { flex:1; height:12px; margin:0; background:#eee; border-radius:4px; overflow:hidden; }
+      #vmp-bar-ok  { height:100%; background:#5cb85c; width:0%; }
+      #vmp-bar-err { height:100%; background:#d9534f; width:0%; }
+    `;
+    document.head.appendChild(s);
+  }
+  function createNavbar() {
+    if (document.getElementById('vmp-nav')) return;
+    ensureStyles();
+    const nav = document.createElement('div'); nav.id = 'vmp-nav';
+    const wrap = document.createElement('div'); wrap.id = 'vmp-wrap';
+    const label = document.createElement('span'); label.id = 'vmp-state'; label.className = 'label label-info'; label.textContent = 'Bereit';
+    const progress = document.createElement('div'); progress.id = 'vmp-progress';
+    const ok = document.createElement('div'); ok.id = 'vmp-bar-ok';
+    const err = document.createElement('div'); err.id = 'vmp-bar-err';
+    progress.append(ok, err); wrap.append(label, progress); nav.append(wrap);
+    document.body.append(nav); document.body.classList.add('vmp-hasbar');
+  }
+  function destroyNavbar() {
+    const nav = document.getElementById('vmp-nav');
+    if (nav) nav.remove();
+    document.body.classList.remove('vmp-hasbar');
+  }
+  function setState(text, cls = 'info', title) {
+    const label = document.getElementById('vmp-state');
+    if (!label) return;
+    label.className = `label label-${cls}`;
+    label.textContent = text;
+    if (title) label.title = title;
+  }
+function updateProgress(ok, err, total, msg) {
+  const okBar = document.getElementById('vmp-bar-ok');
+  const errBar = document.getElementById('vmp-bar-err');
+  if (!okBar || !errBar) return;
+  const safeTotal = Math.max(total, 1);
+  // ok = sent, err wird ignoriert -> Balken zeigt sent/total
+  okBar.style.width = `${(ok / safeTotal) * 100}%`;
+  errBar.style.width = '0%';
+  if (msg) {
+    const label = document.getElementById('vmp-state');
+    if (label) label.title = msg; // nur Tooltip, kein Text
+  }
+}
+
+
+  // ————————————————————————————————————————
+  // Button + Logik auf Fahrzeuglisten (/buildings/*)
+  // ————————————————————————————————————————
+  function addButtonIfMissing() {
+    if (!document.getElementById('vehicle_table')) return;
+    if (document.getElementById('changeMaxPerson')) return;
+
+    const settingsBtn = document.createElement('a');
+    settingsBtn.className = 'btn btn-default btn-xs';
+    settingsBtn.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+    settingsBtn.target = '_blank';
+    settingsBtn.style.marginRight = '6px';
+    const cog = document.createElement('span'); cog.className = 'glyphicon glyphicon-cog'; cog.title = 'Einstellungen';
+    settingsBtn.appendChild(cog);
+
+    const btn = document.createElement('a');
+    btn.className = 'btn btn-success btn-xs';
+    btn.id = 'changeMaxPerson';
+    btn.textContent = 'Max-Personal anwenden';
+
+    const status = document.createElement('div');
+    status.id = 'changeStatus';
+    status.style.marginTop = '5px';
+    status.style.fontWeight = 'bold';
+
+    const table = document.getElementById('vehicle_table');
+    table.parentNode.insertBefore(settingsBtn, table);
+    table.parentNode.insertBefore(btn, table);
+    table.parentNode.insertBefore(status, table.nextSibling);
+
+    btn.addEventListener('click', runChange);
+  }
+  setInterval(addButtonIfMissing, 2000);
+
+  function getRows() {
+    const table = document.getElementById('vehicle_table');
+    if (!table) return [];
+    return Array.from(table.tBodies?.[0]?.rows || []);
+  }
+  function getVehicleTypeID(tr) {
+    return Number(tr.querySelector('td img')?.getAttribute('vehicle_type_id') || 0);
+  }
+  function getVehicleID(tr) {
+    const href = tr.querySelector('td:nth-child(2) a')?.getAttribute('href') || '';
+    return href.replace(/[A-Za-z0-9]+/, '').replaceAll('/', '');
+  }
+  function getCurMaxPer(tr) {
+    const td = tr.querySelector('td:nth-child(6)');
+    const v = td ? parseInt(td.textContent, 10) : 0;
+    return Number.isFinite(v) ? v : 0;
+  }
+const REQUEST_TIMEOUT_MS = 10000; // 10s
+
+function fetchWithTimeout(url, options, ms = REQUEST_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort('timeout'), ms);
+  return fetch(url, { ...options, signal: ctrl.signal })
+    .finally(() => clearTimeout(t));
+}
+
+  async function runChange() {
+    if (sessionStorage.getItem(RUN_FLAG)) sessionStorage.removeItem(RUN_FLAG);
+    sessionStorage.setItem(RUN_FLAG, 'true');
+
+    const rows = getRows();
+    await primeCache(rows); // Delay + Targets einmalig laden
+    const delayPost = DELAY_CACHE;
+    const csrf = $metaCSRF();
+    const total = rows.length;
+
+    createNavbar();
+    setState('Prüfe Fahrzeuge…', 'info');
+
+    let queue = [];
+    for (const tr of rows) {
+      const typeId = getVehicleTypeID(tr);
+      const target = getTargetCached(typeId);
+      if (!target || target < 0) continue; // 0 = ignorieren
+      const cur = getCurMaxPer(tr);
+      if (cur !== target) {
+        queue.push({ tr, typeId, target, cur, id: getVehicleID(tr) });
+      }
     }
 
-    // alle 2 Sekunden prüfen (für Tabs, Ajax-Reloads, etc.)
-    setInterval(addButtonIfMissing, 2000);
-
-    async function getRelevantVehicles(){
-        var vehicleList = Array.prototype.slice.call(
-            $("#vehicle_table")[0].getElementsByTagName("tbody")[0].getElementsByTagName("tr")
-        );
-
-        let total = vehicleList.length;
-        let processed = 0;
-
-        for(let i = 0; i < total; i++){
-            let result = isVehicleIdInArray(getVehicleTypeID(vehicleList[i]));
-            if(result && getCurMaxPer(vehicleList[i]) != result){
-                console.log("vehicle "+ getVehicleID(vehicleList[i]) + " -> " + result);
-                $.post("/vehicles/" + getVehicleID(vehicleList[i]), {
-                    "vehicle": { "personal_max": result },
-                    "_method": "put",
-                    "authenticity_token": $("meta[name=csrf-token]").attr("content")
-                });
-                await delay(200); // bewusst so gelassen
-            }
-            processed++;
-            updateStatus(processed, total);
-        }
-
-        $("#changeMaxPerson")[0].innerHTML = "Anzahl Personen wurden geändert";
-        $("#changeStatus").text("Fertig: Alle Fahrzeuge wurden angepasst. Seite lädt in 5 Sekunden neu...");
-
-        // Reload nach 5 Sekunden
-        setTimeout(() => {
-            window.location.reload();
-        }, 5000);
+    if (!queue.length) {
+      setState('Nichts zu tun', 'success');
+      sessionStorage.removeItem(RUN_FLAG);
+      setTimeout(destroyNavbar, 1200);
+      return;
     }
 
-    function updateStatus(done, total){
-        $("#changeStatus").text(`Bearbeitet: ${done} / ${total}`);
-    }
+let ok = 0, err = 0, sent = 0, totalJobs = queue.length;
+const pendings = [];
 
-    function isVehicleIdInArray(vehId){
-        var result = vehicleTypeIdToClassName.filter((e) => e[0] == vehId);
-        if(result.length > 0){
-            return result[0][1];
-        }
-    }
+// UI-Tick: zeige nur Fortschritt X/X Fahrzeuge
+const uiTick = setInterval(() => {
+  updateProgress(sent, 0, totalJobs);         // Balken = sent/total
+  const label = document.getElementById('vmp-state');
+  if (label) label.textContent = `${sent}/${totalJobs} Fahrzeuge`; // Text = sent/total
+}, 150);
 
-    function getVehicleTypeID(e){
-        return e.getElementsByTagName("td")[0].getElementsByTagName("img")[0].getAttribute("vehicle_type_id");
-    }
 
-    function getVehicleID(e){
-        return e.getElementsByTagName("td")[1].getElementsByTagName("a")[0].getAttribute("href").replace(/[A-Za-z0-9]+/, "").replaceAll("/","");
-    }
 
-    function getCurMaxPer(e){
-        return parseInt(e.getElementsByTagName("td")[5].innerHTML);
-    }
 
-    function delay(time) {
-        return new Promise(resolve => setTimeout(resolve, time));
-    }
-})();
+for (const job of queue) {
+  if (!sessionStorage.getItem(RUN_FLAG)) break;
+
+  // UI-Text wie vorher
+  updateProgress(sent, 0, totalJobs, `Fzg ${job.id} → ${job.target} (Typ ${job.typeId})`);
+
+
+  // Fire-and-forget: NICHT auf $.post warten
+// Fire-and-forget mit fetch
+const form = new URLSearchParams();
+form.set('vehicle[personal_max]', String(job.target));
+form.set('_method', 'put');
+form.set('authenticity_token', csrf);
+
+const p = fetchWithTimeout(`/vehicles/${job.id}`, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    'X-Requested-With': 'XMLHttpRequest'
+  },
+  body: form.toString(),
+  credentials: 'same-origin'
+})
+.then(res => { if (res.ok) ok++; else err++; })
+.catch(() => { err++; });
+
+
+
+  pendings.push(p);
+  sent++;
+  // nur Ausgaberate drosseln
+  if (delayPost > 0) await delay(delayPost);
+}
+
+// Warten bis alle Antworten zurück sind
+await Promise.race([ Promise.allSettled(pendings), delay(15000) ]);
+
+clearInterval(uiTick);
+
+// finaler UI-Stand
+updateProgress(ok, err, totalJobs);
+
+
+    setState('Fertig. Seite lädt neu…', 'success');
+    sessionStorage.removeItem(RUN_FLAG);
+    setTimeout(() => location.reload(), 5000);
+  }
+  })();
