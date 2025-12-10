@@ -1,190 +1,574 @@
 // ==UserScript==
-// @name         Leitstelle Button for assigning people
-// @namespace    http://tampermonkey.net/
-// @version      1.7.1
-// @description  Weist mit einem Klick allen Fahrzeugen automatisch passendes Personal zu, nur mit richtiger Ausbildung und mit Vorgabe der Menge. Fahrzeuge ohne Ausbildung werden direkt übersprungen und Überhänge korrigiert.
+// @name         Leitstelle Assing Personal
+// @namespace    NilsPe.assign.people
+// @version      2.2.0
+// @description  Weist allen Fahrzeugen automatisch passendes Personal zu. Mit zentraler Einstellungsseite (Ziel-Besatzung je Fahrzeugtyp), Fortschrittsbalken sowie Settings-Seite
 // @author       Kruemmel & NilsPe
-// @match        https://www.leitstellenspiel.de/buildings/*
-// @grant        none
+// @match        https://*.leitstellenspiel.de/buildings/*
+// @match        https://*.leitstellenspiel.de/settings/index*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @require      https://update.greasyfork.org/scripts/528065/Skripteinstellungen.user.js
 // ==/UserScript==
 
 (async function () {
   'use strict';
 
-  const PER_PERSON_DELAY_MS = 120; // kurze Pause je Aktion
-  const PER_VEHICLE_DELAY_MS = 180; // Pause zwischen Fahrzeugen
+  // ————————————————————————————————————————
+  // Fahrzeugtypen (einheitliche Liste)
+  // ————————————————————————————————————————
+  const VEHICLE_TYPES = [
+    // Feuerwehr
+    { id: 53, label: 'Dekon-P' },
+    { id: 2, label: 'DLK 23' },
+    { id: 34, label: 'ELW 2' },
+    { id: 57, label: 'FwK' },
+    { id: 121, label: 'GTLF' },
+    { id: 5, label: 'GW-A' },
+    { id: 27, label: 'GW-Gefahrgut' },
+    { id: 33, label: 'GW-Höhenrettung' },
+    { id: 104, label: 'GW-L1' },
+    { id: 105, label: 'GW-L2' },
+    { id: 114, label: 'GW-Lüfter' },
+    { id: 12, label: 'GW-Messtechnik' },
+    { id: 63, label: 'GW-Taucher' },
+    { id: 138, label: 'GW-Verpflegung' },
+    { id: 139, label: 'GW-Küche' },
+    { id: 64, label: 'GW-Wasserrettung' },
+    { id: 30, label: 'HLF 20' },
+    { id: 74, label: 'NAW' },
+    { id: 111, label: 'NEA50 (FW)' },
+    { id: 113, label: 'NEA200 (FW)' },
+    { id: 29, label: 'NEF' },
+    { id: 28, label: 'RTW' },
+    { id: 14, label: 'SW 2000' },
 
-  // --- Eigene Konfiguration: Fahrzeug-Typ-ID => gewünschte Personenanzahl ---
-  const FORCE_ASSIGN = {
-    12: 1,
+    // Rettungsdienst
+    { id: 55, label: 'KdoW-LNA' },
+    { id: 56, label: 'KdoW-OrgL' },
+    { id: 38, label: 'KTW' },
+    { id: 29, label: 'NEF' },
+    { id: 74, label: 'NAW' },
+    { id: 28, label: 'RTW' },
 
-    27: 1,
-    29: 2,
-    31: 1,
-    33: 1,
-    34: 1,
-    35: 1,
-    40: 1,
-    42: 1,
-    45: 1,
-    46: 1,
-    51: 1,
-    53: 6,
-    55: 1,
-    56: 1,
-    57: 1,
-    59: 1,
-    60: 1,
-    61: 1,
-    63: 1,
-    64: 1,
-    69: 1,
-    72: 1,
-    74: 2,
-    75: 1,
-    76: 1,
-    79: 1,
-    80: 1,
-    81: 1,
-    82: 1,
-    83: 1,
-    84: 1,
-    85: 1,
-    86: 1,
-    91: 1,
-    93: 1,
-    94: 1,
-    95: 1,
-    98: 1,
-    99: 1,
-    100: 1,
-    103: 1,
-    109: 1,
-    122: 1,
-    123: 1,
-    125: 1,
-    126: 1,
-    127: 1,
-    128: 1,
-    131: 1,
-    133: 1,
-    134: 1,
-    135: 1,
-    137: 1,
-    140: 1,
-    144: 1,
-    145: 1,
-    147: 1,
-    148: 4,
-    149: 1,
-    151: 1,
-    153: 1,
-    158: 1,
-    162: 1,
-    163: 1,
-    164: 1,
-    165: 1,
-    171: 4,
-    173: 5,
-  };
+    // SEG
+    { id: 174, label: 'Anh TeSi' },
+    { id: 133, label: 'Bt LKW' },
+    { id: 131, label: 'Bt-Kombi' },
+    { id: 59, label: 'ELW 1 (SEG)' },
+    { id: 132, label: 'FKH' },
+    { id: 130, label: 'GW-Bt' },
+    { id: 171, label: 'GW TeSi' },
+    { id: 127, label: 'GW UAS' },
+    { id: 172, label: 'LKW Technik' },
+    { id: 173, label: 'MTW TeSi' },
+    { id: 175, label: 'NEA 50' },
 
-  function addButtonIfMissing() {
-    if ($("#vehicle_table").length && !$("#assignAllPersonnel").length) {
-      $("#vehicle_table").before(`
-        <a class="btn btn-primary btn-xs" id="assignAllPersonnel">
-          Personal zuweisen (alle Fahrzeuge)
-        </a>
-        <div id="assignStatus" style="margin-top:5px; font-weight:bold;"></div>
-        <div id="assignLog" style="margin-top:5px; font-family:monospace; white-space:pre-line; margin-top:6px; max-height:300px; overflow:auto;"></div>
-      `);
+    // Rettungshubschrauber
+    { id: 31, label: 'Rettungshubschrauber' },
 
-      $("#assignAllPersonnel").on("click", function () {
-        $("#assignAllPersonnel").addClass("disabled");
-        assignAllVehicles().finally(() => $("#assignAllPersonnel").removeClass("disabled"));
-      });
+    // Rettungshundestaffel
+    { id: 91, label: 'Rettungshundefahrzeug' },
+
+    // Wasserrettung
+    { id: 63, label: 'GW-Taucher' },
+    { id: 64, label: 'GW-Wasserrettung' },
+    { id: 70, label: 'MZB' },
+
+    // Polizei
+    { id: 94, label: 'DhuFüKw' },
+    { id: 32, label: 'FuStW' },
+    { id: 103, label: 'FuStW (DGL)' },
+    { id: 52, label: 'GefKw' },
+    { id: 95, label: 'Polizeimotorrad' },
+    { id: 98, label: 'Zivilstreifenwagen' },
+
+    // Bereitschaftspolizei
+    { id: 50, label: 'GruKw' },
+    { id: 51, label: 'FüKw' },
+    { id: 165, label: 'LauKW' },
+    { id: 35, label: 'leBefKw' },
+    { id: 52, label: 'GefKw' },
+    { id: 72, label: 'WaWe 10' },
+
+    // Polizeihubschrauber
+    { id: 61, label: 'Polizeihubschrauber' },
+
+    // THW
+    { id: 102, label: 'Anh 7' },
+    { id: 44, label: 'Anh DLE' },
+    { id: 146, label: 'Anh FüLa' },
+    { id: 66, label: 'Anh MzB' },
+    { id: 101, label: 'Anh SwPu' },
+    { id: 43, label: 'BrmG R' },
+    { id: 147, label: 'FmKW' },
+    { id: 39, label: 'GKW' },
+    { id: 100, label: 'MLW 4' },
+    { id: 45, label: 'MLW 5' },
+    { id: 40, label: 'MTW-TZ' },
+    { id: 41, label: 'MzGW (FGr N)' },
+    { id: 109, label: 'MzGW SB' },
+    { id: 110, label: 'NEA50 (THW)' },
+    { id: 112, label: 'NEA200 (THW)' },
+    { id: 122, label: 'LKW 7 Lbw (FGr E)' },
+    { id: 123, label: 'LKW 7 Lbw (FGr WP)' },
+    { id: 42, label: 'LKW K 9' },
+    { id: 172, label: 'LKW Technik' },
+    { id: 144, label: 'FüKW (THW)' },
+    { id: 145, label: 'FüKomKW' },
+  ];
+
+  // ————————————————————————————————————————
+  // Settings-Keys
+  // ————————————————————————————————————————
+  const SETTINGS_IDENTIFIER = 'assign_people_settings';
+  const KEY_PREFIX = 'aps_target_';           // Ziel-Besatzung je Fahrzeugtyp
+  const KEY_DELAY_PERSON = 'aps_delay_person';
+  const KEY_DELAY_VEHICLE = 'aps_delay_vehicle';
+  const DEFAULT_DELAY_PERSON = 100;
+  const DEFAULT_DELAY_VEHICLE = 100;
+
+  // ————————————————————————————————————————
+  // Einstellungsseite (Gruppierung per ORG_FOR_ID)
+  // ————————————————————————————————————————
+  if (location.pathname.startsWith('/settings/index')) {
+    // 1) Delays
+    await addOptions({
+      identifier: SETTINGS_IDENTIFIER,
+      title: 'Assing Personal',
+      settings: [
+        { type: 'header', text: 'Ablauf' },
+        {
+          type: 'number',
+          key: KEY_DELAY_PERSON,
+          default: DEFAULT_DELAY_PERSON,
+          min: 0,
+          max: 5000,
+          label: 'Delay je Person [ms]'
+        },
+        {
+          type: 'number',
+          key: KEY_DELAY_VEHICLE,
+          default: DEFAULT_DELAY_VEHICLE,
+          min: 0,
+          max: 5000,
+          label: 'Delay je Fahrzeug [ms]'
+        }
+      ]
+    });
+
+    const panel = document.getElementById(SETTINGS_IDENTIFIER);
+    if (!panel) return;
+
+    const ORG_ORDER = [
+      'Feuerwehr',
+      'Rettungsdienst',
+      'SEG',
+      'Rettungshubschrauber',
+      'Rettungshundestaffel',
+      'Wasserrettung',
+      'Polizei',
+      'Bereitschaftspolizei',
+      'Polizeihubschrauber',
+      'THW'
+    ];
+
+    // Zuordnung Fahrzeugtyp → Organisation
+    const ORG_FOR_ID = {
+      // Feuerwehr
+      53: 'Feuerwehr',
+      2: 'Feuerwehr',
+      34: 'Feuerwehr',
+      57: 'Feuerwehr',
+      121: 'Feuerwehr',
+      5: 'Feuerwehr',
+      27: 'Feuerwehr',
+      33: 'Feuerwehr',
+      104: 'Feuerwehr',
+      105: 'Feuerwehr',
+      114: 'Feuerwehr',
+      12: 'Feuerwehr',
+      138: 'Feuerwehr',
+      139: 'Feuerwehr',
+      30: 'Feuerwehr',
+      111: 'Feuerwehr',
+      113: 'Feuerwehr',
+      14: 'Feuerwehr',
+
+      // Rettungsdienst
+      55: 'Rettungsdienst',
+      56: 'Rettungsdienst',
+      38: 'Rettungsdienst',
+      29: 'Rettungsdienst',
+      74: 'Rettungsdienst',
+      28: 'Rettungsdienst',
+
+      // SEG
+      174: 'SEG',
+      133: 'SEG',
+      131: 'SEG',
+      59: 'SEG',
+      132: 'SEG',
+      130: 'SEG',
+      171: 'SEG',
+      127: 'SEG',
+      173: 'SEG',
+      175: 'SEG',
+
+      // Rettungshubschrauber
+      31: 'Rettungshubschrauber',
+
+      // Rettungshundestaffel
+      91: 'Rettungshundestaffel',
+
+      // Wasserrettung
+      63: 'Wasserrettung',
+      64: 'Wasserrettung',
+      70: 'Wasserrettung',
+
+      // Polizei
+      94: 'Polizei',
+      32: 'Polizei',
+      103: 'Polizei',
+      52: 'Polizei',
+      95: 'Polizei',
+      98: 'Polizei',
+
+      // Bereitschaftspolizei
+      50: 'Bereitschaftspolizei',
+      51: 'Bereitschaftspolizei',
+      165: 'Bereitschaftspolizei',
+      35: 'Bereitschaftspolizei',
+      72: 'Bereitschaftspolizei',
+
+      // Polizeihubschrauber
+      61: 'Polizeihubschrauber',
+
+      // THW
+      102: 'THW',
+      44: 'THW',
+      146: 'THW',
+      66: 'THW',
+      101: 'THW',
+      43: 'THW',
+      147: 'THW',
+      39: 'THW',
+      100: 'THW',
+      45: 'THW',
+      40: 'THW',
+      41: 'THW',
+      109: 'THW',
+      110: 'THW',
+      112: 'THW',
+      122: 'THW',
+      123: 'THW',
+      42: 'THW',
+      172: 'THW',
+      144: 'THW',
+      145: 'THW',
+    };
+
+    // Gruppen befüllen, doppelte IDs entfernen
+    const groups = new Map();
+    ORG_ORDER.forEach(org => groups.set(org, []));
+    const seenIds = new Set();
+
+    for (const t of VEHICLE_TYPES) {
+      const org = ORG_FOR_ID[t.id];
+      if (!org) continue;
+      if (seenIds.has(t.id)) continue;
+      seenIds.add(t.id);
+      if (!groups.has(org)) groups.set(org, []);
+      groups.get(org).push(t);
     }
+
+    // innerhalb der Gruppen alphabetisch
+    for (const org of ORG_ORDER) {
+      const arr = groups.get(org);
+      if (arr) arr.sort((a, b) => a.label.localeCompare(b.label, 'de'));
+    }
+
+    // Container wie beim Autobuy-Script
+    const vehiclesSection = document.createElement('div');
+    vehiclesSection.style.marginBottom = '20px';
+    vehiclesSection.style.marginLeft = '15px';
+
+    const mainHeader = document.createElement('h3');
+    mainHeader.textContent = 'Ziel-Besatzung je Fahrzeugtyp';
+    mainHeader.style.marginTop = '10px';
+    mainHeader.style.marginBottom = '15px';
+    vehiclesSection.appendChild(mainHeader);
+
+    panel.insertBefore(vehiclesSection, panel.firstChild.nextSibling);
+
+    const inputs = [];
+
+    function createOrgRow(orgName, vehicles) {
+      if (!vehicles || !vehicles.length) return;
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'form-group';
+      wrapper.style.borderBottom = '1px solid #666';
+      wrapper.style.paddingBottom = '12px';
+      wrapper.style.marginBottom = '12px';
+      wrapper.style.paddingLeft = '5px';
+
+      const label = document.createElement('label');
+      label.textContent = orgName;
+      label.style.display = 'block';
+      label.style.fontWeight = 'bold';
+      label.style.fontSize = '16px';
+      label.style.marginBottom = '8px';
+      wrapper.appendChild(label);
+
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.flexWrap = 'wrap';
+      row.style.gap = '12px';
+      row.style.marginLeft = '5px';
+      wrapper.appendChild(row);
+
+      for (const v of vehicles) {
+        const fieldWrap = document.createElement('div');
+        fieldWrap.style.minWidth = '90px';
+
+        const lbl = document.createElement('div');
+        lbl.textContent = v.label;
+        lbl.style.fontWeight = 'bold';
+        lbl.style.fontSize = '13px';
+        lbl.style.marginBottom = '3px';
+        fieldWrap.appendChild(lbl);
+
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.min = '0';
+        input.max = '50';
+        input.className = 'form-control';
+        input.style.width = '70px';
+        input.style.height = '28px';
+        input.style.fontSize = '13px';
+        input.dataset.vehicleId = String(v.id);
+
+        fieldWrap.appendChild(input);
+        row.appendChild(fieldWrap);
+
+        inputs.push(input);
+      }
+
+      vehiclesSection.appendChild(wrapper);
+    }
+
+    // Gruppen in definierter Reihenfolge aufbauen
+    for (const org of ORG_ORDER) {
+      createOrgRow(org, groups.get(org));
+    }
+
+    // Werte aus GM laden
+    await Promise.all(
+      inputs.map(async (input) => {
+        const vid = input.dataset.vehicleId;
+        const key = KEY_PREFIX + vid;
+        const stored = await GM_getValue(key, 0);
+        const num = Number(stored ?? 0);
+        input.value = num > 0 ? String(num) : '';
+      })
+    );
+
+    // Speichern bei Änderung
+    const handleChange = async (e) => {
+      const input = e.target;
+      const vid = input.dataset.vehicleId;
+      if (!vid) return;
+      const key = KEY_PREFIX + vid;
+      const val = parseInt(input.value, 10);
+      const safe = Number.isInteger(val) && val >= 0 ? val : 0;
+      input.value = safe > 0 ? String(safe) : '';
+      await GM_setValue(key, safe);
+    };
+
+    inputs.forEach(inp => inp.addEventListener('change', handleChange));
+
+    return;
+  }
+
+  // ————————————————————————————————————————
+  // Fortschritts-Navbar
+  // ————————————————————————————————————————
+  function ensureStyles() {
+    if (document.getElementById('aps-style')) return;
+    const s = document.createElement('style');
+    s.id = 'aps-style';
+    s.textContent = `
+      #aps-nav { position: fixed; left:0; right:0; bottom:0; background:#f8f8f8; border-top:1px solid #e7e7e7; z-index:2147483000; padding:6px 10px; }
+      body.aps-hasbar { padding-bottom: 40px !important; }
+      #aps-wrap { display:flex; align-items:center; gap:12px; }
+      #aps-state { min-width:260px; font-size:13px; }
+      #aps-progress { flex:1; height:12px; margin:0; background:#eee; border-radius:4px; overflow:hidden; }
+      #aps-bar { height:100%; background:#5cb85c; width:0%; }
+    `;
+    document.head.appendChild(s);
+  }
+  function createNavbar() {
+    if (document.getElementById('aps-nav')) return;
+    ensureStyles();
+    const nav = document.createElement('div'); nav.id = 'aps-nav';
+    const wrap = document.createElement('div'); wrap.id = 'aps-wrap';
+    const label = document.createElement('span'); label.id = 'aps-state'; label.className = 'label label-info'; label.textContent = 'Bereit';
+    const progress = document.createElement('div'); progress.id = 'aps-progress';
+    const bar = document.createElement('div'); bar.id = 'aps-bar';
+    progress.append(bar); wrap.append(label, progress); nav.append(wrap);
+    document.body.append(nav); document.body.classList.add('aps-hasbar');
+  }
+  function destroyNavbar() {
+    const nav = document.getElementById('aps-nav');
+    if (nav) nav.remove();
+    document.body.classList.remove('aps-hasbar');
+  }
+  function setState(text, cls = 'info') {
+    const label = document.getElementById('aps-state');
+    if (!label) return;
+    label.className = `label label-${cls}`;
+    label.textContent = text;
+  }
+  function updateProgress(sent, total) {
+    const bar = document.getElementById('aps-bar');
+    const label = document.getElementById('aps-state');
+    const safeTotal = Math.max(total, 1);
+    const pct = Math.min(100, (sent / safeTotal) * 100);
+    if (bar) bar.style.width = `${pct}%`;
+    if (label) label.textContent = `${sent}/${total} Fahrzeuge`;
+  }
+
+  // ————————————————————————————————————————
+  // Button in der Fahrzeugliste
+  // ————————————————————————————————————————
+  function addButtonIfMissing() {
+    const table = document.getElementById('vehicle_table');
+    if (!table) return;
+    if (document.getElementById('assignAllPersonnel')) return;
+
+    const btn = document.createElement('a');
+    btn.className = 'btn btn-primary btn-xs';
+    btn.id = 'assignAllPersonnel';
+    btn.textContent = 'Personal zuweisen';
+
+    const settingsBtn = document.createElement('a');
+    settingsBtn.className = 'btn btn-default btn-xs';
+    settingsBtn.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+    settingsBtn.target = '_blank';
+    const cog = document.createElement('span'); cog.className = 'glyphicon glyphicon-cog'; cog.title = 'Einstellungen';
+    settingsBtn.appendChild(cog);
+
+    const status = document.createElement('div');
+    status.id = 'assignStatus';
+    status.style.marginTop = '5px';
+    status.style.fontWeight = 'bold';
+
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'block';
+    wrapper.style.marginBottom = '6px';
+
+    wrapper.appendChild(btn);
+    wrapper.appendChild(settingsBtn);
+
+    table.parentNode.insertBefore(wrapper, table);
+    table.parentNode.insertBefore(status, table.nextSibling);
+
+    btn.addEventListener('click', () => {
+      btn.classList.add('disabled');
+      assignAllVehicles().finally(() => btn.classList.remove('disabled'));
+    });
   }
   setInterval(addButtonIfMissing, 1500);
 
+  // ————————————————————————————————————————
+  // Hilfsfunktionen DOM/Tabelle
+  // ————————————————————————————————————————
+  function getRows() {
+    const table = document.getElementById('vehicle_table');
+    if (!table) return [];
+    return Array.from(table.tBodies?.[0]?.rows || []);
+  }
+  function getVehicleID(tr) {
+    const href = tr.querySelector('td:nth-child(2) a')?.getAttribute('href') || '';
+    return href.replace(/\D/g, '');
+  }
+  function getVehicleTypeIDFromRow(tr) {
+    return Number(tr.querySelector('td img')?.getAttribute('vehicle_type_id') || 0);
+  }
+
+  // ————————————————————————————————————————
+  // Cache: Ziel-Besatzungen + Delays
+  // ————————————————————————————————————————
+  let TARGETS_CACHE = null;
+  let DELAY_PERSON = DEFAULT_DELAY_PERSON;
+  let DELAY_VEHICLE = DEFAULT_DELAY_VEHICLE;
+
+  async function primeCache(rows) {
+    const rawP = await GM_getValue(KEY_DELAY_PERSON);
+    const rawV = await GM_getValue(KEY_DELAY_VEHICLE);
+    DELAY_PERSON = Number(rawP ?? DEFAULT_DELAY_PERSON) || 0;
+    DELAY_VEHICLE = Number(rawV ?? DEFAULT_DELAY_VEHICLE) || 0;
+
+    const typeIds = Array.from(new Set(rows.map(getVehicleTypeIDFromRow)));
+    const values = await Promise.all(typeIds.map(id => GM_getValue(KEY_PREFIX + String(id))));
+    TARGETS_CACHE = new Map();
+    typeIds.forEach((id, i) => TARGETS_CACHE.set(id, Number(values[i] ?? 0) || 0));
+  }
+  const getTargetForType = (typeId) => TARGETS_CACHE?.get(typeId) || 0;
+
+  const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // ————————————————————————————————————————
+  // Kernlogik
+  // ————————————————————————————————————————
   async function assignAllVehicles() {
-    const rows = Array.from($("#vehicle_table tbody tr"));
-    const total = rows.length;
-    let processed = 0;
+    const rows = getRows();
+    await primeCache(rows);
 
-    $("#assignLog").text("");
-    for (const row of rows) {
-      const vehId = getVehicleID(row);
-      try {
-        const result = await assignVehicle(vehId);
-        logVehicle(result);
-      } catch (e) {
-        console.warn("Fehler bei Fahrzeug " + vehId, e);
-        logVehicle({ id: vehId, assigned: 0, cap: 0, error: true, message: e && e.message, wanted: 0 });
-      }
+    createNavbar();
+    setState('Starte…', 'info');
 
-      processed++;
-      updateStatus(processed, total);
-      await delay(PER_VEHICLE_DELAY_MS);
+    const jobs = rows.map(tr => ({
+      vehicleId: getVehicleID(tr),
+      typeId: getVehicleTypeIDFromRow(tr),
+    })).filter(j => j.vehicleId);
+
+    const filtered = [];
+    for (const j of jobs) {
+      const wanted = getTargetForType(j.typeId);
+      if (wanted > 0) filtered.push({ ...j, wanted });
     }
 
-    $("#assignAllPersonnel")[0].innerHTML = "Personal wurde zugewiesen";
-    $("#assignStatus").text("Fertig! Seite lädt in 5 Sekunden neu...");
+    const total = filtered.length;
+    let sent = 0;
+    updateProgress(sent, total);
+
+    for (const job of filtered) {
+      await assignVehicle(job.vehicleId, job.wanted);
+      sent++;
+      updateProgress(sent, total);
+      if (DELAY_VEHICLE > 0) await delay(DELAY_VEHICLE);
+    }
+
+    setState('Fertig. Seite lädt neu…', 'success');
     setTimeout(() => location.reload(), 5000);
   }
 
-  function updateStatus(done, total) {
-    $("#assignStatus").text(`Bearbeitet: ${done} / ${total}`);
-  }
-
-  function logVehicle({ id, assigned, cap, error, message, wanted }) {
-    let msg, color;
-
-    if (error) {
-      msg = `Fahrzeug ${id}: Fehler beim Zuweisen${message ? " — " + message : ""}`;
-      color = "red";
-    } else if (message && message.startsWith("Übersprungen")) {
-      msg = `Fahrzeug ${id}: ${message}`;
-      color = "gray";
-    } else if (assigned === wanted) {
-      msg = `Fahrzeug ${id}: ${assigned}/${wanted} besetzt (voll besetzt)`;
-      color = "green";
-    } else if (assigned < wanted) {
-      msg = `Fahrzeug ${id}: ${assigned}/${wanted} besetzt (nicht voll)`;
-      color = "orange";
-    } else if (assigned > wanted) {
-      msg = `Fahrzeug ${id}: ${assigned}/${wanted} besetzt (zu viele, korrigiert)`;
-      color = "orange";
-    } else {
-      msg = `Fahrzeug ${id}: ${assigned}/${cap} besetzt (keine Zuweisung erfolgt)`;
-      color = "gray";
-    }
-
-    $("#assignLog").append(`<span style="color:${color}">${msg}</span>\n`);
-  }
-
-  function getVehicleID(e) {
-    return e.getElementsByTagName("td")[1]
-      .getElementsByTagName("a")[0]
-      .getAttribute("href")
-      .replace(/\D/g, "");
-  }
-
-  // ---- Hilfsfunktionen ----
   async function fetchAssignDoc(vehicleId) {
     const resp = await fetch(`/vehicles/${vehicleId}/zuweisung`, {
-      headers: { "x-requested-with": "XMLHttpRequest" },
-      credentials: "same-origin",
+      headers: { 'x-requested-with': 'XMLHttpRequest' },
+      credentials: 'same-origin',
     });
-    if (!resp.ok) throw new Error("Zuweisungsseite nicht erreichbar: " + resp.status);
+    if (!resp.ok) throw new Error('Zuweisungsseite nicht erreichbar: ' + resp.status);
     const html = await resp.text();
-    const parser = new DOMParser();
-    return parser.parseFromString(html, "text/html");
+    return new DOMParser().parseFromString(html, 'text/html');
   }
 
   function parseCap(doc) {
-    const el = doc.querySelector("#count_personal");
+    const el = doc.querySelector('#count_personal');
     if (!el) return { assignedCapRaw: 0, cap: 0 };
-    const text = el.parentElement?.textContent || "";
+    const text = el.parentElement?.textContent || '';
     const m = text.match(/(\d+)\s*\/\s*(\d+)/);
     if (!m) return { assignedCapRaw: 0, cap: 0 };
     return { assignedCapRaw: parseInt(m[1]) || 0, cap: parseInt(m[2]) || 0 };
@@ -192,101 +576,166 @@
 
   function isRowMatching(row, identifier) {
     if (identifier) {
-      const dfb = row.getAttribute("data-filterable-by") || "";
+      const dfb = row.getAttribute('data-filterable-by') || '';
       return dfb.includes(identifier);
     } else {
-      const qualText = (row.children?.[1]?.innerText || "").trim().toLowerCase();
-      return qualText === "" || qualText === "-";
+      const qualText = (row.children?.[1]?.innerText || '').trim().toLowerCase();
+      return qualText === '' || qualText === '-';
     }
   }
 
   function collectRows(doc, identifier) {
-    const rows = Array.from(doc.querySelectorAll("tr"));
-    const boundMatchingRows = rows.filter(r => r.querySelector("a.btn-assigned") && isRowMatching(r, identifier));
+    const rows = Array.from(doc.querySelectorAll('tr'));
+    const boundMatchingRows = rows.filter(r => r.querySelector('a.btn-assigned') && isRowMatching(r, identifier));
     const candidateRows = rows.filter(r => {
-      const btn = r.querySelector("a.btn-success");
+      const btn = r.querySelector('a.btn-success');
       if (!btn) return false;
       if (!isRowMatching(r, identifier)) return false;
       const col = r.children?.[2];
-      return !(col && col.innerText.trim().startsWith("Im Unterricht"));
+      return !(col && col.innerText.trim().startsWith('Im Unterricht'));
     });
     return { boundMatchingRows, candidateRows };
   }
 
-  async function assignVehicle(vehicleId) {
-    // 1) vehicle_type via API
+  function getIdentifierByVehicleTypeId(vehicleTypeId) {
+    switch (vehicleTypeId) {
+      case 12: return 'gw_messtechnik';
+      case 27: return 'gw_gefahrgut';
+      case 29: return 'notarzt';
+      case 31: return 'notarzt';
+      case 33: return 'gw_hoehenrettung';
+      case 34: return 'elw2';
+      case 35: return 'police_einsatzleiter';
+      case 40: return 'thw_zugtrupp';
+      case 42: return 'thw_raumen';
+      case 45: return 'thw_raumen';
+      case 46: return 'wechsellader';
+      case 51: return 'police_fukw';
+      case 53: return 'dekon_p';
+      case 55: return 'lna';
+      case 56: return 'orgl';
+      case 57: return 'fwk';
+      case 59: return 'seg_elw';
+      case 60: return 'seg_gw_san';
+      case 61: return 'polizeihubschrauber';
+      case 63: return 'gw_taucher';
+      case 64: return 'gw_wasserrettung';
+      case 69: return 'gw_taucher';
+      case 72: return 'police_wasserwerfer';
+      case 74: return 'notarzt';
+      case 75: return 'arff';
+      case 76: return 'rettungstreppe';
+      case 79: return 'police_sek';
+      case 80: return 'police_sek';
+      case 81: return 'police_mek';
+      case 82: return 'police_mek';
+      case 83: return 'werkfeuerwehr';
+      case 84: return 'werkfeuerwehr';
+      case 85: return 'werkfeuerwehr';
+      case 86: return 'werkfeuerwehr';
+      case 91: return 'seg_rescue_dogs';
+      case 93: return 'thw_rescue_dogs';
+      case 94: return 'k9';
+      case 95: return 'police_motorcycle';
+      case 98: return 'criminal_investigation';
+      case 99: return 'water_damage_pump';
+      case 100: return 'water_damage_pump';
+      case 103: return 'police_service_group_leader';
+      case 109: return 'heavy_rescue';
+      case 122: return 'thw_energy_supply';
+      case 123: return 'water_damage_pump';
+      case 125: return 'thw_drone';
+      case 126: return 'fire_drone';
+      case 127: return 'seg_drone';
+      case 128: return 'fire_drone';
+      case 131: return 'care_service';
+      case 133: return 'care_service_equipment';
+      case 134: return 'police_horse';
+      case 135: return 'police_horse';
+      case 137: return 'police_horse';
+      case 140: return 'fire_care_service';
+      case 144: return 'thw_command';
+      case 145: return 'thw_command';
+      case 147: return 'thw_command';
+      case 148: return 'thw_command';
+      case 149: return 'notarzt';
+      case 151: return 'mountain_command';
+      case 153: return 'seg_rescue_dogs';
+      case 158: return 'mountain_height_rescue';
+      case 162: return 'railway_fire';
+      case 163: return 'railway_fire';
+      case 164: return 'railway_fire';
+      case 165: return 'police_speaker_operator';
+      case 171: return 'disaster_response_technology';
+      case 172: return 'disaster_response_technology';
+      case 173: return 'disaster_response_technology';
+      case 175: return 'disaster_response_technology';
+      default: return null;
+    }
+  }
+
+  async function assignVehicle(vehicleId, wanted) {
     let vehicleTypeId = null;
     try {
-      const vresp = await fetch(`/api/v2/vehicles/${vehicleId}`, { credentials: "same-origin" });
-      if (!vresp.ok) throw new Error("Vehicle API nicht erreichbar: " + vresp.status);
+      const vresp = await fetch(`/api/v2/vehicles/${vehicleId}`, { credentials: 'same-origin' });
+      if (!vresp.ok) throw new Error('Vehicle API nicht erreichbar: ' + vresp.status);
       const vjson = await vresp.json();
       vehicleTypeId = vjson.result && vjson.result.vehicle_type;
     } catch (e) {
-      throw new Error("Fehler beim Abfragen des vehicle_type: " + e.message);
+      return;
     }
 
-    // 2) Nur Fahrzeuge aus FORCE_ASSIGN bearbeiten
-    if (FORCE_ASSIGN[vehicleTypeId] === undefined) {
-      return { id: vehicleId, assigned: 0, cap: 0, error: false, message: "Übersprungen (nicht in Liste)", wanted: 0 };
-    }
-    const wanted = FORCE_ASSIGN[vehicleTypeId];
     const identifier = getIdentifierByVehicleTypeId(vehicleTypeId);
-    const csrf = document.querySelector("meta[name=csrf-token]")?.content || "";
+    const csrf = document.querySelector("meta[name=csrf-token]")?.content || '';
     const headers = {
-      "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-      "x-csrf-token": csrf,
-      "x-requested-with": "XMLHttpRequest",
+      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'x-csrf-token': csrf,
+      'x-requested-with': 'XMLHttpRequest',
     };
 
-    // 3) Seite holen + zählen
     let doc = await fetchAssignDoc(vehicleId);
     let { cap } = parseCap(doc);
     let { boundMatchingRows, candidateRows } = collectRows(doc, identifier);
     let assignedMatching = boundMatchingRows.length;
 
-    // 4) Überhang abbauen
     if (assignedMatching > wanted) {
       let toRemove = assignedMatching - wanted;
       for (const row of [...boundMatchingRows].reverse()) {
         if (toRemove <= 0) break;
-        const delLink = row.querySelector("a.btn-assigned");
+        const delLink = row.querySelector('a.btn-assigned');
         if (!delLink) continue;
-
         try {
-          const r = await fetch(delLink.href, { method: "POST", headers, credentials: "same-origin" });
+          const r = await fetch(delLink.href, { method: 'POST', headers, credentials: 'same-origin' });
           if (r.ok) {
             toRemove--;
-            await delay(PER_PERSON_DELAY_MS);
+            if (DELAY_PERSON > 0) await delay(DELAY_PERSON);
             doc = await fetchAssignDoc(vehicleId);
             ({ cap } = parseCap(doc));
             ({ boundMatchingRows, candidateRows } = collectRows(doc, identifier));
             assignedMatching = boundMatchingRows.length;
           }
-        } catch (e) {
-          console.warn("Fehler beim Entfernen", e);
-        }
+        } catch { /* noop */ }
       }
     }
 
-    // 5) Fehlende auffüllen
     if (assignedMatching < wanted) {
       let need = wanted - assignedMatching;
       for (const row of candidateRows) {
         if (need <= 0) break;
-        const btn = row.querySelector("a.btn-success");
+        const btn = row.querySelector('a.btn-success');
         if (!btn) continue;
 
         let ok = false;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            const r = await fetch(btn.href, { method: "POST", headers, credentials: "same-origin" });
+            const r = await fetch(btn.href, { method: 'POST', headers, credentials: 'same-origin' });
             if (r.ok) { ok = true; break; }
             await delay(r.status === 429 ? 1000 : 200);
           } catch { await delay(200); }
         }
         if (ok) {
           need--;
-          await delay(PER_PERSON_DELAY_MS);
+          if (DELAY_PERSON > 0) await delay(DELAY_PERSON);
           doc = await fetchAssignDoc(vehicleId);
           ({ cap } = parseCap(doc));
           ({ boundMatchingRows, candidateRows } = collectRows(doc, identifier));
@@ -294,90 +743,5 @@
         }
       }
     }
-
-    return { id: vehicleId, assigned: assignedMatching, cap, error: false, message: "", wanted };
   }
-
-  function delay(ms) {
-    return new Promise(r => setTimeout(r, ms));
-  }
-
-  // --- Identifier-Mapping ---
-  function getIdentifierByVehicleTypeId(vehicleTypeId) {
-    switch (vehicleTypeId) {
-      case 12: return "gw_messtechnik";
-      case 27: return "gw_gefahrgut";
-      case 29: return "notarzt";
-      case 31: return "notarzt";
-      case 33: return "gw_hoehenrettung";
-      case 34: return "elw2";
-      case 35: return "police_einsatzleiter";
-      case 40: return "thw_zugtrupp";
-      case 42: return "thw_raumen";
-      case 45: return "thw_raumen";
-      case 46: return "wechsellader";
-      case 51: return "police_fukw";
-      case 53: return "dekon_p";
-      case 55: return "lna";
-      case 56: return "orgl";
-      case 57: return "fwk";
-      case 59: return "seg_elw";
-      case 60: return "seg_gw_san";
-      case 61: return "polizeihubschrauber";
-      case 63: return "gw_taucher";
-      case 64: return "gw_wasserrettung";
-      case 69: return "gw_taucher";
-      case 72: return "police_wasserwerfer";
-      case 74: return "notarzt";
-      case 75: return "arff";
-      case 76: return "rettungstreppe";
-      case 79: return "police_sek";
-      case 80: return "police_sek";
-      case 81: return "police_mek";
-      case 82: return "police_mek";
-      case 83: return "werkfeuerwehr";
-      case 84: return "werkfeuerwehr";
-      case 85: return "werkfeuerwehr";
-      case 86: return "werkfeuerwehr";
-      case 91: return "seg_rescue_dogs";
-      case 93: return "thw_rescue_dogs";
-      case 94: return "k9";
-      case 95: return "police_motorcycle";
-      case 98: return "criminal_investigation";
-      case 99: return "water_damage_pump";
-      case 100: return "water_damage_pump";
-      case 103: return "police_service_group_leader";
-      case 109: return "heavy_rescue";
-      case 122: return "thw_energy_supply";
-      case 123: return "water_damage_pump";
-      case 125: return "thw_drone";
-      case 126: return "fire_drone";
-      case 127: return "seg_drone";
-      case 128: return "fire_drone";
-      case 131: return "care_service";
-      case 133: return "care_service_equipment";
-      case 134: return "police_horse";
-      case 135: return "police_horse";
-      case 137: return "police_horse";
-      case 140: return "fire_care_service";
-      case 144: return "thw_command";
-      case 145: return "thw_command";
-      case 147: return "thw_command";
-      case 148: return "thw_command";
-      case 149: return "notarzt";
-      case 151: return "mountain_command";
-      case 153: return "seg_rescue_dogs";
-      case 158: return "mountain_height_rescue";
-      case 162: return "railway_fire";
-      case 163: return "railway_fire";
-      case 164: return "railway_fire";
-      case 165: return "police_speaker_operator";
-      case 171: return "disaster_response_technology";
-      case 172: return "disaster_response_technology";
-      case 173: return "disaster_response_technology";
-      case 175: return "disaster_response_technology";
-      default: return null;
-    }
-  }
-
 })();
