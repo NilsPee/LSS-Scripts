@@ -1,184 +1,476 @@
 // ==UserScript==
-// @name         Leitstelle Autobuy vehicles
-// @namespace    http://tampermonkey.net/
-// @version      4.0.1
-// @description  Fahrzeuge automatisch kaufen – funktioniert sowohl in Einzelwachen als auch in Leitstellen (alle zugeordneten Wachen)
+// @name         Leitstelle Autobuy Vehicles
+// @namespace    NilsPe.autobuy.vehicles.hybrid
+// @version      5.1.0
+// @description  Fahrzeuge automatisch kaufen – mit zentraler Settingssseite je Gebäudetyp und separaten Eingabefeldern pro Fahrzeugtyp und Fortschrittsbalken
 // @author       Silberfighter & NilsPe
-// @include      https://www.leitstellenspiel.de/buildings/*
+// @match        https://*.leitstellenspiel.de/buildings/*
+// @match        https://*.leitstellenspiel.de/settings/index*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=leitstellenspiel.de
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @require      https://update.greasyfork.org/scripts/528065/Skripteinstellungen.user.js
 // ==/UserScript==
 
 (async function () {
+  'use strict';
 
   //----------------------------------------------
-  // EINSTELLUNGEN
+  // DEFAULT-EINSTELLUNGEN / KEYS
   //----------------------------------------------
-  const DELAY_PER_VEHICLE = 100;
-  const DELAY_PER_BUILDING = 100;
-  const DELAY_AFTER_FETCH = 100;
+  const DEFAULT_DELAY_PER_VEHICLE  = 100;
+  const DEFAULT_DELAY_PER_BUILDING = 100;
+  const DEFAULT_DELAY_AFTER_FETCH  = 100;
 
-  //----------------------------------------------
-  // KONFIGURATION
-  //----------------------------------------------
-    const vehicleConfigurations = [
+  const KEY_DELAY_PER_VEHICLE  = 'abv_delay_per_vehicle';
+  const KEY_DELAY_PER_BUILDING = 'abv_delay_per_building';
+  const KEY_DELAY_AFTER_FETCH  = 'abv_delay_after_fetch';
 
-        /*
-        ANLEITUNG
+  const SETTINGS_IDENTIFIER = 'autobuy_vehicles_types';
+  const KEY_VEHICLES_PREFIX = 'abv_vehicles_type_';
+  const RUN_FLAG = 'abv_run_flag';
 
-        1. kopiere folgenden Eintrag in dem sich unterhalb dieser Anleitung markierten Bereich:
-
-
-
-        {
-            buildingID: 11,
-            displayName: "",
-            vehicles:[
-                [50,9],
-                [35,3],
-                [51,1],
-                [52,1],
-            ]
-        },
-
-
-
-        Die sich am Anfang darin befindenden Einträge können rausgelöscht werden. Sie dienen als Veranschaulichung, wie ein beispielhafter Eitnrag aussehen kann.
-
-
-        2. tausche die 11 in folgender Zeile    buildingID: 11,     durch die Gebäude-ID, für welche ein Eintrag erstellt werden soll. Lösche nicht das Komma am Ende!!!
-
-        3. trage in folgender Zeile     displayName: "",     zwischen die beiden Gänsefüßchen den Namen der Konfiguration ein. Dieser Name wird auf den klickbaren Knopf angezeigt. Lösche nicht das Komma am Ende!!!
-
-        4. ersetze die 4 folgenden Einträge
-
-                [50,9],
-                [35,3],
-                [51,1],
-                [52,1],
-
-        durch die Fahrzeuge, die gekauft werden sollen. Die erste Zahl ist die Fahrzeug-ID. Die zweite Zahl gibt an, wie viele Fahrzeuge in der Wache vorhanden sein sollen.
-        z.B. der Eintrag    [50,9],   bewirkt, dass das Fahrzeug mit der ID 50 (GruKw) am Ende 9 mal in der Wache vorhanden sein wird, NICHT 9 mal gekauft wird. Dies ist relevant, wenn bereits GruKw in der Wache vorhanden sind.
-        Wenn z.B. bereits 3 GruKw vorhanden sind, werden nur 6 weitere gekauft, sodass am Ende 9 vorhanden sind
-
-
-        */
-
-        //------- FÜGE EINTRÄGE UNTERHALB EIN -------
-
-        {
-            buildingID: 11,
-            displayName: "Bereitschaftspolizei",
-            vehicles:[
-                [50,9], //GruKw
-                [35,3], //lBefKw
-                [51,1], //FüKW
-            ]
-        },
-        {
-            buildingID: 0,
-            displayName: "Feuerwache",
-            vehicles:[
-               [2,2], //DLK23
-               [53,1], //DekonP
-                [34,2], //ELW2
-                [57,1], //FwK
-                [5,1], //GW-A
-                [27,1], //GW-G
-                [12,1], //GW-Mess
-                [33,1], //GW-Höhe
-                [10,1], //GW-Öl
-                [30,6], //HLF20
-                [14,2], //SW2000
-            ]
-        },
-        {
-            buildingID: 2,
-            displayName: "Rettungswache",
-            vehicles:[
-                [74,1], //NAW
-                [28,8], //RTW
-                [29,4], //NEF
-                [55,1], //LNA
-                [56,1], //OrgL
-            ]
-        },
-        {
-            buildingID: 6,
-            displayName: "Polizeiwache",
-            vehicles:[
-                [32,10], //FuStw
-                [103,1], //FuStw (DGL)
-            ]
-        },
-        {
-            buildingID: 13,
-            displayName: "Polizeihubschrauber",
-            vehicles:[
-                [61,4], //Pol-Hubschrauber
-            ]
-        },
-        {
-            buildingID: 15,
-            displayName: "Wasserrettung",
-            vehicles:[
-                [63,2], //GW-Taucher
-                [64,2], //GW-Wasser
-                [70,2], //Boot
-            ]
-        },
-        {
-            buildingID: 12,
-            displayName: "SEG-Wache",
-            vehicles:[
-               [63,1], //GW-Taucher
-               [64,1], //GW-Wasser
-               [70,1], //Boot
-               [59,1], //ELW 1 SEG
-               [127,1], //GW UAS
-               [91,2], //Rettungshund
-            //  [132,3], //FKH
-            //  [133,3], //Bt LKW
-            //  [131,4], //Bt-Kombi
-
-           ]
-        },
-        {
-            buildingID: 9,
-            displayName: "THW-Ortsverband",
-            vehicles:[
-               [39,2], //GKW
-               [40,2], //MTW-TZ
-               [41,2], //MzGW(N)
-               [42,1], //LKW K9
-               [123,1], //LKW 7 Lbw
-               [100,1], //MLW 4
-               [45,1], //MLW 5
-               [43,1], //BrmG R
-               [44,1], //Anh DLE
-               [101,1], //Anh SwPu
-               [102,1], //Anh 7
-               [110,2], //NEA50
-              // [144,1], //FüKW (THW)
-              // [145,1], //FüKomKW
-              // [146,1,], //Anh FüLa
-              // [147,1], //FmKW
-              // [148,1], //MTW-Fgr K
-               [109,1], //MzGw SB
-            ]
-        },
-        //------- FÜGE EINTRÄGE OBERHALB EIN -------
-    ];
-
-
-    const buildingsIDToIgnore = [4,1,3,8,10];
+  // Gebäudetypen, für die wir eine Reihe von Feldern anzeigen wollen
+  const BUILDING_TYPES = [
+    { id: 0,  label: 'Feuerwache' },
+    { id: 2,  label: 'Rettungswache' },
+    { id: 6,  label: 'Polizeiwache' },
+    { id: 9,  label: 'THW-Ortsverband' },
+    { id: 11, label: 'Bereitschaftspolizei' },
+    { id: 12, label: 'SEG-Wache' },
+    { id: 15, label: 'Wasserrettung' },
+  ];
 
   //----------------------------------------------
-  // HILFSFUNKTIONEN
+  // DEFAULT-FAHRZEUG-KONFIGURATIONEN (Fallback)
+  //----------------------------------------------
+  const DEFAULT_VEHICLE_CONFIGS = [
+    {
+      buildingID: 11,
+      displayName: "Bereitschaftspolizei",
+      vehicles: [
+        [50, 9],  // GruKw
+        [35, 3],  // leBefKw
+        [51, 1],  // FüKW
+        [52, 1],  // GefKw
+        [72, 3],  // WaWe
+        [94, 3],  // DhuFüKw
+      ]
+    },
+    {
+      buildingID: 0,
+      displayName: "Feuerwache",
+      vehicles: [
+        [30, 6], // HLF20
+        [2,  2], // DLK23
+        [14, 2], // SW2000
+        [53, 1], // DekonP
+        [34, 2], // ELW2
+        [57, 1], // FwK
+        [5,  1], // GW-A
+        [27, 1], // GW-G
+        [12, 1], // GW-Mess
+        [33, 1], // GW-Höhe
+        [10, 1], // GW-Öl
+      ]
+    },
+    {
+      buildingID: 2,
+      displayName: "Rettungswache",
+      vehicles: [
+        [28, 8], // RTW
+        [29, 4], // NEF
+        [74, 1], // NAW
+        [55, 1], // LNA
+        [56, 1], // OrgL
+      ]
+    },
+    {
+      buildingID: 6,
+      displayName: "Polizeiwache",
+      vehicles: [
+         [32,10], // FuStw
+         [103,1], // FuStw (DGL)
+         [98,1],  // Zivil
+      ]
+    },
+    {
+      buildingID: 15,
+      displayName: "Wasserrettung",
+      vehicles: [
+        [63, 2], // GW-Taucher
+        [64, 2], // GW-Wasser
+        [70, 2], // Boot
+      ]
+    },
+    {
+      buildingID: 12,
+      displayName: "SEG-Wache",
+      vehicles: [
+        [171, 2], // GW TeSi
+        [173, 2], // MTW TeSi
+        [174, 2], // Anh TeSi
+      ]
+    },
+    {
+      buildingID: 9,
+      displayName: "THW-Ortsverband",
+      vehicles: [
+        [39,  2], // GKW
+        [40,  2], // MTW-TZ
+        [41,  2], // MzGW(N)
+        [42,  1], // LKW K9
+        [123, 1], // LKW 7 Lbw
+        [100, 1], // MLW 4
+        [45,  1], // MLW 5
+        [43,  1], // BrmG R
+        [44,  1], // Anh DLE
+        [101, 1], // Anh SwPu
+        [102, 1], // Anh 7
+        [110, 2], // NEA50
+        [109, 1], // MzGw SB
+      ]
+    },
+  ];
+
+  // Eingabefelder für verschiedene Fahrzeuge
+  const VEHICLE_FIELDS_BY_TYPE = {
+    0: [
+      { id: 30, label: 'HLF20' },
+      { id: 2,  label: 'DLK23' },
+      { id: 14, label: 'SW2000' },
+      { id: 5,  label: 'GW-A' },
+      { id: 27, label: 'GW-G' },
+      { id: 12, label: 'GW-Mess' },
+      { id: 33, label: 'GW-Höhe' },
+      { id: 10, label: 'GW-Öl' },
+      { id: 53, label: 'DekonP' },
+      { id: 34, label: 'ELW2' },
+      { id: 57, label: 'FwK' },
+    ],
+    2: [
+      { id: 28, label: 'RTW' },
+      { id: 29, label: 'NEF' },
+      { id: 74, label: 'NAW' },
+      { id: 55, label: 'LNA' },
+      { id: 56, label: 'OrgL' },
+    ],
+    6: [
+      { id: 32,  label: 'FuStw' },
+      { id: 103, label: 'FuStw (DGL)' },
+      { id: 98,  label: 'Zivil' },
+    ],
+    9: [
+      { id: 39,  label: 'GKW' },
+      { id: 40,  label: 'MTW-TZ' },
+      { id: 41,  label: 'MzGW(N)' },
+      { id: 42,  label: 'LKW K9' },
+      { id: 123, label: 'LKW 7 Lbw' },
+      { id: 100, label: 'MLW 4' },
+      { id: 45,  label: 'MLW 5' },
+      { id: 43,  label: 'BrmG R' },
+      { id: 44,  label: 'Anh DLE' },
+      { id: 101, label: 'Anh SwPu' },
+      { id: 102, label: 'Anh 7' },
+      { id: 110, label: 'NEA50' },
+      { id: 109, label: 'MzGw SB' },
+    ],
+    11: [
+      { id: 50, label: 'GruKw' },
+      { id: 35, label: 'leBefKw' },
+      { id: 51, label: 'FüKW' },
+      { id: 52, label: 'GefKw' },
+      { id: 72, label: 'WaWe' },
+      { id: 94, label: 'DhuFüKw' },
+    ],
+    12: [
+      { id: 171, label: 'GW TeSi' },
+      { id: 173, label: 'MTW TeSi' },
+      { id: 174, label: 'Anh TeSi' },
+    ],
+    15: [
+      { id: 63, label: 'GW-Taucher' },
+      { id: 64, label: 'GW-Wasser' },
+      { id: 70, label: 'Boot' },
+    ]
+  };
+
+  const buildingsIDToIgnore = [4, 1, 3, 8, 10];
+
+  //----------------------------------------------
+  // HILFSFUNKTIONEN ALLGEMEIN
   //----------------------------------------------
   function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
-  async function getBuildingsOfLeitstelle(leitstellenId) {
+  function findDefaultConfigForType(typeId) {
+    return DEFAULT_VEHICLE_CONFIGS.find(c => c.buildingID === Number(typeId)) || null;
+  }
+
+  function parseStoredVehicles(raw) {
+    if (!raw) return [];
+    try {
+      const v = JSON.parse(raw);
+      if (Array.isArray(v)) {
+        return v
+          .map(e => {
+            if (!Array.isArray(e) || e.length < 1) return null;
+            const id = parseInt(e[0], 10);
+            const cnt = e.length > 1 ? parseInt(e[1], 10) : 0;
+            if (!Number.isInteger(id) || !Number.isInteger(cnt)) return null;
+            return [id, cnt];
+          })
+          .filter(Boolean);
+      }
+    } catch {}
+    return [];
+  }
+
+  async function getConfiguredDelays() {
+    const dVeh = Number(await GM_getValue(KEY_DELAY_PER_VEHICLE, DEFAULT_DELAY_PER_VEHICLE)) || DEFAULT_DELAY_PER_VEHICLE;
+    const dBld = Number(await GM_getValue(KEY_DELAY_PER_BUILDING, DEFAULT_DELAY_PER_BUILDING)) || DEFAULT_DELAY_PER_BUILDING;
+    const dFetch = Number(await GM_getValue(KEY_DELAY_AFTER_FETCH, DEFAULT_DELAY_AFTER_FETCH)) || DEFAULT_DELAY_AFTER_FETCH;
+    return {
+      DELAY_PER_VEHICLE:  dVeh,
+      DELAY_PER_BUILDING: dBld,
+      DELAY_AFTER_FETCH:  dFetch
+    };
+  }
+
+  async function getConfigForType(typeId) {
+    const key = KEY_VEHICLES_PREFIX + String(typeId);
+    const raw = await GM_getValue(key, '[]');
+    let vehicles = parseStoredVehicles(raw);
+
+    const def = findDefaultConfigForType(typeId);
+    if ((!vehicles || !vehicles.length) && def && Array.isArray(def.vehicles)) {
+      vehicles = def.vehicles.map(([id, cnt]) => [id, cnt]);
+    }
+
+    if (!vehicles || !vehicles.length) return null;
+
+    return {
+      buildingID: Number(typeId),
+      displayName: def?.displayName || `Typ ${typeId}`,
+      vehicles
+    };
+  }
+
+  //----------------------------------------------
+  // BOTTOM-BAR WIE BEIM LEVEL-SCRIPT (eigene IDs)
+  //----------------------------------------------
+  function ensureStyles() {
+    if (document.getElementById('abv-style')) return;
+    const s = document.createElement('style');
+    s.id = 'abv-style';
+    s.textContent = `
+      #abv-nav { position: fixed; left:0; right:0; bottom:0; background:#f8f8f8; border-top:1px solid #e7e7e7; z-index:2147483000; padding:6px 10px; }
+      body.abv-hasbar { padding-bottom: 40px !important; }
+      #abv-wrap { display:flex; align-items:center; gap:12px; }
+      #abv-state { min-width:240px; font-size:13px; }
+      #abv-progress { flex:1; height:12px; margin:0; background:#eee; border-radius:4px; overflow:hidden; }
+      #abv-bar-ok  { height:100%; background:#5cb85c; width:0%; }
+      #abv-bar-err { height:100%; background:#d9534f; width:0%; }
+    `;
+    document.head.appendChild(s);
+  }
+
+  function createNavbar() {
+    if (document.getElementById('abv-nav')) return;
+    ensureStyles();
+    const nav = document.createElement('div'); nav.id = 'abv-nav';
+    const wrap = document.createElement('div'); wrap.id = 'abv-wrap';
+    const label = document.createElement('span'); label.id = 'abv-state'; label.className = 'label label-success'; label.textContent = 'Bereit';
+    const progress = document.createElement('div'); progress.id = 'abv-progress';
+    const ok = document.createElement('div'); ok.id = 'abv-bar-ok';
+    const err = document.createElement('div'); err.id = 'abv-bar-err';
+    progress.append(ok, err); wrap.append(label, progress); nav.append(wrap);
+    document.body.append(nav); document.body.classList.add('abv-hasbar');
+  }
+
+  function destroyNavbar() {
+    const nav = document.getElementById('abv-nav');
+    if (nav) nav.remove();
+    document.body.classList.remove('abv-hasbar');
+  }
+
+  function setState(text, cls = 'info', title) {
+    const label = document.getElementById('abv-state');
+    if (!label) return;
+    label.className = `label label-${cls}`;
+    label.textContent = text;
+    if (title) label.title = title;
+  }
+
+  function updateProgress(ok, err, total, msg) {
+    const okBar = document.getElementById('abv-bar-ok');
+    const errBar = document.getElementById('abv-bar-err');
+    const label = document.getElementById('abv-state');
+    if (!okBar || !errBar || !label) return;
+    const safeTotal = Math.max(total, 1);
+    okBar.style.width = `${(ok / safeTotal) * 100}%`;
+    errBar.style.width = `${(err / safeTotal) * 100}%`;
+    const done = ok + err;
+    label.className = done === total ? 'label label-success' : 'label label-warning';
+    label.textContent = done === total ? `${done}/${total} fertig` : `${done}/${total} Gebäude`;
+    if (msg) label.title = msg;
+  }
+
+  //----------------------------------------------
+  // SETTINGS-SEITE
+  //----------------------------------------------
+  if (location.pathname.startsWith('/settings/index')) {
+    await addOptions({
+      identifier: SETTINGS_IDENTIFIER,
+      title: 'Autobuy Vehicles',
+      settings: [
+        { type: 'header', text: 'Fahrzeuge je Gebäudetyp' },
+        { type: 'header', text: 'Ablauf / Delays' },
+        {
+          type: 'number',
+          key: KEY_DELAY_PER_VEHICLE,
+          default: DEFAULT_DELAY_PER_VEHICLE,
+          min: 0,
+          max: 5000,
+          label: 'Delay pro Fahrzeugkauf [ms]'
+        },
+        {
+          type: 'number',
+          key: KEY_DELAY_PER_BUILDING,
+          default: DEFAULT_DELAY_PER_BUILDING,
+          min: 0,
+          max: 5000,
+          label: 'Delay pro Gebäude [ms]'
+        },
+        {
+          type: 'number',
+          key: KEY_DELAY_AFTER_FETCH,
+          default: DEFAULT_DELAY_AFTER_FETCH,
+          min: 0,
+          max: 5000,
+          label: 'Delay nach Seitenabruf [ms] (Leitstelle)'
+        }
+      ]
+    });
+
+    const panel = document.getElementById(SETTINGS_IDENTIFIER);
+    if (!panel) return;
+
+    const vehiclesSection = document.createElement('div');
+    vehiclesSection.style.marginBottom = '20px';
+    vehiclesSection.style.marginLeft = '15px';
+    panel.insertBefore(vehiclesSection, panel.firstChild.nextSibling);
+
+    function createTypeRow(typeInfo) {
+      const def = findDefaultConfigForType(typeInfo.id);
+      const defaultVehicles = def?.vehicles || [];
+      let fields = VEHICLE_FIELDS_BY_TYPE[typeInfo.id];
+
+      if (!fields || !fields.length) {
+        fields = defaultVehicles.map(([id]) => ({ id, label: `ID ${id}` }));
+      }
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'form-group';
+      wrapper.style.borderBottom = '1px solid #666';
+      wrapper.style.paddingBottom = '12px';
+      wrapper.style.marginBottom = '12px';
+      wrapper.style.paddingLeft = '5px';
+
+      const label = document.createElement('label');
+      label.textContent = `${typeInfo.label}`;
+      label.style.display = 'block';
+      label.style.fontWeight = 'bold';
+      label.style.fontSize = '16px';
+      label.style.marginBottom = '8px';
+      wrapper.appendChild(label);
+
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.flexWrap = 'wrap';
+      row.style.gap = '12px';
+      row.style.marginLeft = '5px';
+      wrapper.appendChild(row);
+
+      for (const f of fields) {
+        const fieldWrap = document.createElement('div');
+        fieldWrap.style.minWidth = '80px';
+
+        const lbl = document.createElement('div');
+        lbl.textContent = f.label;
+        lbl.style.fontWeight = 'bold';
+        lbl.style.fontSize = '13px';
+        lbl.style.marginBottom = '3px';
+        fieldWrap.appendChild(lbl);
+
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.min = '0';
+        input.className = 'form-control';
+        input.style.width = '70px';
+        input.style.height = '28px';
+        input.style.fontSize = '13px';
+        input.dataset.vehicleId = String(f.id);
+        fieldWrap.appendChild(input);
+
+        row.appendChild(fieldWrap);
+      }
+
+      vehiclesSection.appendChild(wrapper);
+      return { row, typeId: typeInfo.id };
+    }
+
+    async function initRowState(rowInfo) {
+      const { row, typeId } = rowInfo;
+      const key = KEY_VEHICLES_PREFIX + String(typeId);
+      const raw = await GM_getValue(key, '[]');
+      let parsed = parseStoredVehicles(raw);
+
+      const def = findDefaultConfigForType(typeId);
+      if ((!parsed || !parsed.length) && def && def.vehicles) {
+        parsed = def.vehicles;
+      }
+
+      const map = new Map(parsed.map(([id, cnt]) => [String(id), cnt]));
+
+      row.querySelectorAll('input[data-vehicle-id]').forEach(input => {
+        const vid = input.dataset.vehicleId;
+        const val = map.get(vid);
+        input.value = Number.isInteger(val) ? String(val) : '';
+      });
+
+      const save = async () => {
+        const arr = [];
+        row.querySelectorAll('input[data-vehicle-id]').forEach(input => {
+          const vid = parseInt(input.dataset.vehicleId, 10);
+          const cnt = parseInt(input.value, 10);
+          if (Number.isInteger(cnt) && cnt >= 0) {
+            arr.push([vid, cnt]);
+          }
+        });
+        await GM_getValue; // dummy to keep linter ruhig
+        await GM_setValue(key, JSON.stringify(arr));
+      };
+
+      row.querySelectorAll('input[data-vehicle-id]').forEach(input => {
+        input.addEventListener('change', save);
+      });
+    }
+
+    const rows = [];
+    for (const t of BUILDING_TYPES) {
+      rows.push(createTypeRow(t));
+    }
+    for (const r of rows) {
+      await initRowState(r);
+    }
+
+    return;
+  }
+
+  //----------------------------------------------
+  // GEBÄUDE / FAHRZEUGE HILFSFUNKTIONEN
+  //----------------------------------------------
+  async function getBuildingsOfLeitstelle(leitstellenId, DELAY_AFTER_FETCH) {
     let out = [];
     try {
       const res = await fetch(`/buildings/${leitstellenId}/leitstelle-buildings`);
@@ -198,29 +490,6 @@
           .filter(b => (seen.has(b.id) ? false : (seen.add(b.id), true)));
       }
     } catch {}
-
-    if (out.length === 0) {
-      const tabBtn = document.querySelector(`a[href="#tab_buildings"]`) ||
-                     document.querySelector(`a[url*="/leitstelle-buildings"]`);
-      if (tabBtn) {
-        tabBtn.click();
-        for (let i = 0; i < 50; i++) {
-          const anchors = document.querySelectorAll(`#tab_buildings a[href^="/buildings/"]`);
-          if (anchors.length > 0) break;
-          await delay(100);
-        }
-        const anchors = Array.from(document.querySelectorAll(`#tab_buildings a[href^="/buildings/"]`));
-        const seen = new Set();
-        out = anchors
-          .map(a => {
-            const id = a.getAttribute("href").split("/buildings/")[1].split("/")[0];
-            const name = a.innerText.trim();
-            return { id, name, type: null };
-          })
-          .filter(b => /^\d+$/.test(b.id))
-          .filter(b => (seen.has(b.id) ? false : (seen.add(b.id), true)));
-      }
-    }
 
     for (const b of out) {
       try {
@@ -274,122 +543,170 @@
       .map(img => img.getAttribute("vehicle_type_id"));
   }
 
-  async function autobuyForLeitstelle(leitstellenId, statusDiv) {
-    const buildings = await getBuildingsOfLeitstelle(leitstellenId);
+  //----------------------------------------------
+  // AUTOBUY (LEITSTELLE) MIT BOTTOM-BAR
+  //----------------------------------------------
+  async function autobuyForLeitstelle(leitstellenId, DELAY_PER_VEHICLE, DELAY_PER_BUILDING, DELAY_AFTER_FETCH) {
+    const buildings = await getBuildingsOfLeitstelle(leitstellenId, DELAY_AFTER_FETCH);
     const vehicles = await getVehiclesOfLeitstelle(leitstellenId);
 
-    const total = buildings.length;
-    let processed = 0;
-
-for (const b of buildings) {
-  processed++;
-  if (!b.type) {
-    statusDiv.innerText = `Überspringe ${b.name} (${b.id}) – kein Typ ermittelt`;
-    continue;
-  }
-
-  const config = vehicleConfigurations.find(c => c.buildingID == Number(b.type));
-  if (!config) {
-    statusDiv.innerText = `(${processed}/${total}) Überspringe ${b.name}`;
-    await delay(DELAY_PER_BUILDING);
-    continue;
-  }
-
-  statusDiv.innerText = `(${processed}/${total}) Bearbeite ${b.name} …`;
-
-  for (const [vehicleType, wanted] of config.vehicles) {
-    const current = vehicles.filter(
-      v => String(v.building) === String(b.id) && String(v.type) === String(vehicleType)
-    ).length;
-    const toBuy = Math.max(0, wanted - current);
-    if (toBuy === 0) continue;
-
-    // *** Risikoarme Parallel-Variante: alle Fahrzeuge dieses Typs gleichzeitig kaufen ***
-    const buyPromises = [];
-    for (let i = 0; i < toBuy; i++) {
-      buyPromises.push(
-        $.post(`/buildings/${b.id}/vehicle/${b.id}/${vehicleType}/credits?building=${b.id}`, {
-          "_method": "get",
-          "authenticity_token": $("meta[name=csrf-token]").attr("content")
-        })
-      );
+    // nur Gebäude zählen, für die es überhaupt eine Config gibt
+    const targets = [];
+    for (const b of buildings) {
+      if (!b.type) continue;
+      const cfg = await getConfigForType(Number(b.type));
+      if (cfg && cfg.vehicles && cfg.vehicles.length) {
+        targets.push({ building: b, config: cfg });
+      }
     }
-    await Promise.all(buyPromises); // warte, bis alle POSTs durch sind
-    await delay(300); // kurzer Puffer zwischen Typen
-  }
 
-  await delay(DELAY_PER_BUILDING); // Puffer zwischen Wachen
-}
+    if (targets.length === 0) {
+      setState('Nichts zu tun', 'success');
+      setTimeout(destroyNavbar, 1200);
+      return;
+    }
 
-    statusDiv.innerText = "✅ Autobuy abgeschlossen!";
+    let ok = 0, err = 0, total = targets.length;
+
+    for (const t of targets) {
+      if (!sessionStorage.getItem(RUN_FLAG)) break;
+
+      const b = t.building;
+      const config = t.config;
+
+      try {
+        setState(`${b.name}`, 'info');
+        updateProgress(ok, err, total, `${b.name}`);
+
+        for (const [vehicleType, wanted] of config.vehicles) {
+          if (!Number.isInteger(wanted) || wanted <= 0) continue;
+
+          const current = vehicles.filter(
+            v => String(v.building) === String(b.id) && String(v.type) === String(vehicleType)
+          ).length;
+          const toBuy = Math.max(0, wanted - current);
+          if (toBuy === 0) continue;
+
+          const buyPromises = [];
+          for (let i = 0; i < toBuy; i++) {
+            buyPromises.push(
+              $.post(`/buildings/${b.id}/vehicle/${b.id}/${vehicleType}/credits?building=${b.id}`, {
+                "_method": "get",
+                "authenticity_token": $("meta[name=csrf-token]").attr("content")
+              })
+            );
+          }
+          await Promise.all(buyPromises);
+          await delay(DELAY_PER_VEHICLE);
+        }
+
+        ok++;
+      } catch {
+        err++;
+      }
+      updateProgress(ok, err, total);
+      await delay(DELAY_PER_BUILDING);
+    }
+
+    setState('Fertig', 'success');
+    setTimeout(destroyNavbar, 1500);
   }
 
   //----------------------------------------------
-  // HAUPTLOGIK
+  // HAUPTLOGIK (Gebäudeseiten)
   //----------------------------------------------
-  const buildingId = window.location.href.replace("https://www.leitstellenspiel.de/buildings/", "");
-  const titleDiv = Array.from(document.getElementsByTagName("h1")).find(e => e.getAttribute("building_type") != undefined);
+  const titleDiv = Array.from(document.getElementsByTagName("h1"))
+    .find(e => e.getAttribute("building_type") != null);
   if (!titleDiv) return;
+
   const buildingTypeID = Number(titleDiv.getAttribute("building_type"));
+  const buildingId = Number(window.location.pathname.split("/").pop());
+
+  const { DELAY_PER_VEHICLE, DELAY_PER_BUILDING, DELAY_AFTER_FETCH } = await getConfiguredDelays();
 
   // Leitstelle
   if (buildingTypeID === 7) {
-    let wrapperDIV = document.createElement("div");
-    wrapperDIV.innerText = "Leitstelle - Autobuy Vehicles:";
-    wrapperDIV.style.padding = "15px 5px 15px 5px";
+    const wrapperDIV = document.createElement("div");
+    wrapperDIV.style.padding = "5px 0";
     titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
 
-    let btn = document.createElement("a");
+    const btn = document.createElement("a");
     btn.className = "btn btn-success btn-xs";
     btn.innerText = "Autobuy Vehicles";
-    btn.style.margin = "5px";
     wrapperDIV.appendChild(btn);
 
-    let statusDiv = document.createElement("div");
-    statusDiv.style.marginTop = "10px";
-    statusDiv.style.fontWeight = "bold";
-    wrapperDIV.appendChild(statusDiv);
+    const btnSettings = document.createElement("a");
+    btnSettings.className = "btn btn-default btn-xs";
+    btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+    btnSettings.target = '_blank';
+    const cog = document.createElement('span');
+    cog.className = 'glyphicon glyphicon-cog';
+    cog.title = 'Einstellungen';
+    btnSettings.appendChild(cog);
+    wrapperDIV.appendChild(btnSettings);
 
     btn.addEventListener("click", async function () {
-      statusDiv.innerText = "🔄 Lade Gebäudeliste und Fahrzeugliste…";
-      await autobuyForLeitstelle(buildingId, statusDiv);
+      if (sessionStorage.getItem(RUN_FLAG)) sessionStorage.removeItem(RUN_FLAG);
+      sessionStorage.setItem(RUN_FLAG, 'true');
+
+      createNavbar();
+      setState('Lade Gebäudeliste…', 'info');
+
+      await autobuyForLeitstelle(buildingId, DELAY_PER_VEHICLE, DELAY_PER_BUILDING, DELAY_AFTER_FETCH);
+
+      sessionStorage.removeItem(RUN_FLAG);
     });
     return;
   }
 
-  // Einzelne Wache
+  // Einzelgebäude
   if (buildingsIDToIgnore.indexOf(buildingTypeID) >= 0) return;
 
-  let wrapperDIV = document.createElement("div");
-  wrapperDIV.innerText = "Vehicle-Configs:";
-  wrapperDIV.style.padding = "15px 5px 15px 5px";
+  const wrapperDIV = document.createElement("div");
+  wrapperDIV.style.padding = "10px 0";
   titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
 
-  for (let i = 0; i < vehicleConfigurations.length; i++) {
-    if (vehicleConfigurations[i].buildingID == buildingTypeID) {
-      let btn = document.createElement("a");
-      btn.className = "btn btn-success btn-xs autoVehicleBuy";
-      btn.setAttribute("config_id", i);
-      btn.innerText = vehicleConfigurations[i].displayName;
-      btn.style.margin = "5px";
-      wrapperDIV.appendChild(btn);
+  const btnSingle = document.createElement("a");
+  btnSingle.className = "btn btn-success btn-xs";
+  btnSingle.innerText = "Autobuy (laut Einstellungen)";
+  btnSingle.style.marginRight = "6px";
+  wrapperDIV.appendChild(btnSingle);
+
+  const btnSettingsSingle = document.createElement("a");
+  btnSettingsSingle.className = "btn btn-default btn-xs";
+  btnSettingsSingle.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+  btnSettingsSingle.target = '_blank';
+  const cog2 = document.createElement('span');
+  cog2.className = 'glyphicon glyphicon-cog';
+  cog2.title = 'Einstellungen';
+  btnSettingsSingle.appendChild(cog2);
+  wrapperDIV.appendChild(btnSettingsSingle);
+
+  // optionaler (versteckter) Textstatus – falls du ihn später wieder brauchst
+  const statusDivSingle = document.createElement("div");
+  statusDivSingle.style.marginTop = "10px";
+  statusDivSingle.style.fontWeight = "bold";
+  statusDivSingle.style.display = "none"; // unsichtbar, wir nutzen die Bottom-Bar
+  wrapperDIV.appendChild(statusDivSingle);
+
+  btnSingle.addEventListener("click", async function () {
+    const config = await getConfigForType(buildingTypeID);
+    if (!config || !config.vehicles || !config.vehicles.length) {
+      alert('Für diesen Gebäudetyp sind in den Einstellungen keine Fahrzeuge hinterlegt.');
+      return;
     }
-  }
 
-  document.querySelectorAll(".autoVehicleBuy").forEach(function (element) {
-    element.addEventListener("click", async function () {
-      const config = vehicleConfigurations[element.getAttribute("config_id")];
-      let statusDiv = document.createElement("div");
-      statusDiv.style.marginTop = "10px";
-      statusDiv.style.fontWeight = "bold";
-      wrapperDIV.appendChild(statusDiv);
+    const allVehicles = await getVehiclesOfBuilding(buildingId);
+    let bought = false;
 
-      const allVehicles = await getVehiclesOfBuilding(buildingId);
-      statusDiv.innerText = "🚀 Kaufe Fahrzeuge...";
-      let bought = false;
+    createNavbar();
+    setState("Kaufe Fahrzeuge...", 'info');
+    updateProgress(0, 0, 1, "Kaufe Fahrzeuge");
 
+    try {
       for (const [vehicleType, wanted] of config.vehicles) {
-        const current = allVehicles.filter(v => v == vehicleType.toString()).length;
+        if (!Number.isInteger(wanted) || wanted <= 0) continue;
+        const current = allVehicles.filter(v => v === vehicleType.toString()).length;
         const toBuy = Math.max(0, wanted - current);
         for (let i = 0; i < toBuy; i++) {
           await $.post(`/buildings/${buildingId}/vehicle/${buildingId}/${vehicleType}/credits?building=${buildingId}`, {
@@ -401,10 +718,17 @@ for (const b of buildings) {
         }
       }
 
+      updateProgress(1, 0, 1);
+      setState('Fertig', 'success');
       await delay(DELAY_PER_BUILDING);
       if (bought) location.reload();
-      else statusDiv.innerText = "✅ Alle Fahrzeuge vorhanden!";
-    });
+    } catch {
+      updateProgress(0, 1, 1);
+      setState('Fehler', 'danger');
+      setTimeout(destroyNavbar, 1500);
+    } finally {
+      if (!bought) setTimeout(destroyNavbar, 1500);
+    }
   });
 
 })();
