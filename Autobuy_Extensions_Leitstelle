@@ -1,87 +1,482 @@
 // ==UserScript==
 // @name         Leitstelle Autobuy Extensions
 // @namespace    http://tampermonkey.net/
-// @version      1.2.0
-// @description  Ausbauten automatisch kaufen – funktioniert sowohl in Einzelwachen als auch in Leitstellen
+// @version      2.3.1
+// @description  Ausbauten automatisch kaufen – mit zentraler Einstellungsseite und benannten Mehrfach-Selects je Gebäudetyp
 // @author       Silberfighter & NilsPe
-// @include      https://www.leitstellenspiel.de/buildings/*
+// @match        https://www.leitstellenspiel.de/buildings/*
+// @match        https://www.leitstellenspiel.de/settings/index*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=leitstellenspiel.de
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @require      https://update.greasyfork.org/scripts/528065/Skripteinstellungen.user.js
+// @require      https://update.greasyfork.org/scripts/516844/API-Speicher.user.js
 // ==/UserScript==
 
 (async function () {
+  'use strict';
 
   //----------------------------------------------
-  // EINSTELLUNGEN
+  // DEFAULT-EINSTELLUNGEN / KEYS
   //----------------------------------------------
-  const DELAY_PER_ACTION = 120; // Pause zwischen Kaufaktionen
-  const DELAY_PER_BUILDING = 100; // Pause zwischen Gebäuden
-  const DELAY_AFTER_FETCH = 100; // Pause nach Laden von Gebäuden
+  const DEFAULT_DELAY_PER_ACTION   = 120;
+  const DEFAULT_DELAY_PER_BUILDING = 100;
+  const DEFAULT_DELAY_AFTER_FETCH  = 100;
 
-  //----------------------------------------------
-  // KONFIGURATION
-  //----------------------------------------------
-  const extensionsConfigurations = [
-//    {
-//      buildingID: 0,
-//      displayName: "Standardwache",
-//      ausbauten:[0,1,2,3,4,5],
-//      spezialisierung:[0],
-//      lager:[0],
-//    },
-//    {
-//      buildingID: 9,
-//      displayName: "THW-Ortsverband",
-//      ausbauten:[0,1,2,4,5,6,8,9,13],
-//      spezialisierung:[0],
-//      lager:[0],
-//    },
-//    {
-//      buildingID: 11,
-//      displayName: "Bereitschaftspolizei",
-//      ausbauten:[0,1],
-//      spezialisierung:[0],
-//      lager:[0],
-//    },
-//    {
-//      buildingID: 21,
-//      displayName: "Rettungshunde",
-//      ausbauten:[]
-//    },
-//    {
-//      buildingID: 16,
-//      displayName: "Polizeizellen",
-//      ausbauten:[0,1,2,3,4,5,6,7,8,9]
-//    },
-    {
-      buildingID: 6,
-      displayName: "Polizeiwache",
-      ausbauten:[12,11,0,1,2,3,4,5,6,7,8,9]
-    },
-//    {
-//      buildingID: 12,
-//      displayName: "Schnelleinsatzgruppe",
-//      ausbauten:[3]
-//    },
-//    {
-//      buildingID: 4,
-//      displayName: "Krankenhaus",
-//      ausbauten:[0,1,2,3,4,5,6,7,8]
-//    },
-//    {
-//      buildingID: 8,
-//      displayName: "Polizeischule",
-//      ausbauten:[0,1,2]
-//    },
+  const KEY_DELAY_PER_ACTION   = 'abe_delay_per_action';
+  const KEY_DELAY_PER_BUILDING = 'abe_delay_per_building';
+  const KEY_DELAY_AFTER_FETCH  = 'abe_delay_after_fetch';
+
+  const SETTINGS_IDENTIFIER  = 'autobuy_extensions_types';
+  const KEY_AUSBAUTEN_PREFIX = 'abe_ausbauten_type_';
+
+  // Gebäudetypen für Settings
+  const BUILDING_TYPES = [
+    { id: 0,  label: 'Feuerwache' },
+    { id: 2,  label: 'Rettungswache' },
+    { id: 4,  label: 'Krankenhaus' },
+    { id: 5,  label: 'Rettungshubschrauber-Station' },
+    { id: 6,  label: 'Polizeiwache' },
+    { id: 8,  label: 'Polizeischule' },
+    { id: 9,  label: 'THW-Ortsverband' },
+    { id: 11, label: 'Bereitschaftspolizei' },
+    { id: 12, label: 'Schnelleinsatzgruppe' },
+    { id: 13, label: 'Polizeihubschrauberstation' },
+    { id: 15, label: 'Wasserrettung' },
+    { id: 16, label: 'Polizeizellen' },
+    { id: 18, label: 'Feuerwache (Kleinwache)' },
+    { id: 19, label: 'Polizeiwache (Kleinwache)' },
+    { id: 20, label: 'Rettungswache (Kleinwache)' },
+    { id: 21, label: 'Rettungshunde' },
   ];
-  const buildingsIDToIgnore = [4,1,3,8,10];
+
+  //----------------------------------------------
+  // NAMEN DER AUSBAUTEN JE GEBÄUDETYP
+  //----------------------------------------------
+  const EXT_OPTIONS_BY_TYPE = {
+    // Feuerwehr (0, 18)
+    0: [
+      { value: '0',  label: 'Rettungsdienst' },
+      { value: '1',  label: 'Abrollbehälter 1' },
+      { value: '2',  label: 'Abrollbehälter 2' },
+      { value: '3',  label: 'Abrollbehälter 3' },
+      { value: '4',  label: 'Abrollbehälter 4' },
+      { value: '5',  label: 'Abrollbehälter 5' },
+      { value: '7',  label: 'Abrollbehälter 7' },
+      { value: '10', label: 'Abrollbehälter 10' },
+      { value: '11', label: 'Abrollbehälter 11' },
+      { value: '12', label: 'Abrollbehälter 12' },
+      { value: '17', label: 'Abrollbehälter 17' },
+      { value: '6',  label: 'Wasserrettung' },
+      { value: '8',  label: 'Flughafen' },
+      { value: '13', label: 'Werkfeuerwehr' },
+      { value: '14', label: 'NEA50' },
+      { value: '15', label: 'NEA200' },
+      { value: '16', label: 'Lüfter' },
+      { value: '18', label: 'Drohnen-Erweiterung' },
+      { value: '19', label: 'Verpflegungsdienst' },
+      { value: '20', label: 'Anhänger-Stellplatz 1' },
+      { value: '21', label: 'Anhänger-Stellplatz 2' },
+      { value: '22', label: 'Anhänger-Stellplatz 3' },
+      { value: '23', label: 'Anhänger-Stellplatz 4' },
+      { value: '24', label: 'Anhänger-Stellplatz 5' },
+      { value: '25', label: 'Bahnrettung' },
+      { value: '9',  label: 'Großwache' },
+    ],
+    18: [
+      { value: '0',  label: 'Rettungsdienst' },
+      { value: '1',  label: 'Abrollbehälter 1' },
+      { value: '2',  label: 'Abrollbehälter 2' },
+      { value: '3',  label: 'Abrollbehälter 3' },
+      { value: '4',  label: 'Abrollbehälter 4' },
+      { value: '5',  label: 'Abrollbehälter 5' },
+      { value: '7',  label: 'Abrollbehälter 7' },
+      { value: '10', label: 'Abrollbehälter 10' },
+      { value: '11', label: 'Abrollbehälter 11' },
+      { value: '12', label: 'Abrollbehälter 12' },
+      { value: '17', label: 'Abrollbehälter 17' },
+      { value: '6',  label: 'Wasserrettung' },
+      { value: '8',  label: 'Flughafen' },
+      { value: '13', label: 'Werkfeuerwehr' },
+      { value: '14', label: 'NEA50' },
+      { value: '15', label: 'NEA200' },
+      { value: '16', label: 'Lüfter' },
+      { value: '18', label: 'Drohnen-Erweiterung' },
+      { value: '19', label: 'Verpflegungsdienst' },
+      { value: '20', label: 'Anhänger-Stellplatz 1' },
+      { value: '21', label: 'Anhänger-Stellplatz 2' },
+      { value: '22', label: 'Anhänger-Stellplatz 3' },
+      { value: '23', label: 'Anhänger-Stellplatz 4' },
+      { value: '24', label: 'Anhänger-Stellplatz 5' },
+      { value: '25', label: 'Bahnrettung' },
+      { value: '9',  label: 'Großwache' },
+    ],
+
+    // Polizei (6, 19)
+    6: [
+      { value: '0',  label: 'Zelle 1' },
+      { value: '1',  label: 'Zelle 2' },
+      { value: '2',  label: 'Zelle 3' },
+      { value: '3',  label: 'Zelle 4' },
+      { value: '4',  label: 'Zelle 5' },
+      { value: '5',  label: 'Zelle 6' },
+      { value: '6',  label: 'Zelle 7' },
+      { value: '7',  label: 'Zelle 8' },
+      { value: '8',  label: 'Zelle 9' },
+      { value: '9',  label: 'Zelle 10' },
+      { value: '10', label: 'Diensthundestaffel' },
+      { value: '11', label: 'Kriminalpolizei' },
+      { value: '12', label: 'Dienstgruppenleitung' },
+      { value: '13', label: 'Motorradstaffel' },
+      { value: '14', label: 'Großwache' },
+      { value: '15', label: 'Großgewahrsam' },
+    ],
+    19: [
+      { value: '0',  label: 'Zelle 1' },
+      { value: '1',  label: 'Zelle 2' },
+      { value: '2',  label: 'Zelle 3' },
+      { value: '3',  label: 'Zelle 4' },
+      { value: '4',  label: 'Zelle 5' },
+      { value: '5',  label: 'Zelle 6' },
+      { value: '6',  label: 'Zelle 7' },
+      { value: '7',  label: 'Zelle 8' },
+      { value: '8',  label: 'Zelle 9' },
+      { value: '9',  label: 'Zelle 10' },
+      { value: '10', label: 'Diensthundestaffel' },
+      { value: '11', label: 'Kriminalpolizei' },
+      { value: '12', label: 'Dienstgruppenleitung' },
+      { value: '13', label: 'Motorradstaffel' },
+      { value: '14', label: 'Großwache' },
+      { value: '15', label: 'Großgewahrsam' },
+    ],
+
+    // Polizeizellen (16)
+    16: [
+      { value: '0', label: 'Zelle 1' },
+      { value: '1', label: 'Zelle 2' },
+      { value: '2', label: 'Zelle 3' },
+      { value: '3', label: 'Zelle 4' },
+      { value: '4', label: 'Zelle 5' },
+      { value: '5', label: 'Zelle 6' },
+      { value: '6', label: 'Zelle 7' },
+      { value: '7', label: 'Zelle 8' },
+      { value: '8', label: 'Zelle 9' },
+      { value: '9', label: 'Zelle 10' },
+    ],
+
+    // Bereitschaftspolizei (11)
+    11: [
+      { value: '0',  label: '2. Zug der Hundertschaft' },
+      { value: '1',  label: '3. Zug der Hundertschaft' },
+      { value: '2',  label: 'Sonderfahrzeug: Gefangenenkraftwagen' },
+      { value: '3',  label: 'Technischer Zug: Wasserwerfer' },
+      { value: '4',  label: 'SEK: 1. Zug' },
+      { value: '5',  label: 'SEK: 2. Zug' },
+      { value: '6',  label: 'MEK: 1. Zug' },
+      { value: '7',  label: 'MEK: 2. Zug' },
+      { value: '8',  label: 'Diensthundestaffel' },
+      { value: '9',  label: 'Reiterstaffel' },
+      { value: '10', label: 'LauKW' },
+    ],
+
+    // THW-Ortsverband (9)
+    9: [
+      { value: '0',  label: '1. TZ: FGr Notversorgung/Notinstandsetzung' },
+      { value: '1',  label: '1. TZ: Zugtrupp' },
+      { value: '4',  label: '2. TZ – Grundvoraussetzungen' },
+      { value: '5',  label: '2. TZ: FGr Notversorgung/Notinstandsetzung' },
+      { value: '6',  label: '2. TZ: Zugtrupp' },
+      { value: '2',  label: 'Fachgruppe Räumen' },
+      { value: '3',  label: 'Fachgruppe Wassergefahren' },
+      { value: '7',  label: 'Fachgruppe Ortung' },
+      { value: '8',  label: 'Fachgruppe Wasserschaden/Pumpen' },
+      { value: '9',  label: 'Fachgruppe schwere Bergung' },
+      { value: '10', label: 'Fachgruppe Elektroversorgung' },
+      { value: '11', label: 'Ortsverbands-Mannschaftstransportwagen' },
+      { value: '12', label: 'Trupp Unbemannte Luftfahrtsysteme' },
+      { value: '13', label: 'Fachzug Führung und Kommunikation' },
+      { value: '14', label: 'Fachgruppe Logistik-Verpflegung' },
+    ],
+
+    // Krankenhaus (4)
+    4: [
+      { value: '0', label: 'Allgemeine Innere' },
+      { value: '1', label: 'Allgemeine Chirurgie' },
+      { value: '2', label: 'Gynäkologie' },
+      { value: '3', label: 'Urologie' },
+      { value: '4', label: 'Unfallchirurgie' },
+      { value: '5', label: 'Neurologie' },
+      { value: '6', label: 'Neurochirurgie' },
+      { value: '7', label: 'Kardiologie' },
+      { value: '8', label: 'Kardiochirurgie' },
+      { value: '9', label: 'Großkrankenhaus' },
+    ],
+
+    // SEG (12)
+    12: [
+      { value: '0', label: 'Führung' },
+      { value: '1', label: 'Sanitätsdienst' },
+      { value: '2', label: 'Wasserrettungs-Erweiterung' },
+      { value: '3', label: 'Rettungshundestaffel' },
+      { value: '4', label: 'SEG Drohne' },
+      { value: '5', label: 'Betreuungs- und Verpflegungsdienst' },
+      { value: '6', label: 'SEG Technik und Sicherheit' },
+    ],
+  };
+
+  // Generische Optionen für Typen, für die du noch nichts definiert hast
+  const GENERIC_OPTIONS = Array.from({ length: 26 }, (_, i) => ({
+    value: String(i),
+    label: `Erweiterung ${i}`,
+  }));
+
+  //----------------------------------------------
+  // DEFAULT-KONFIGURATION (nur Fallback)
+  //----------------------------------------------
+  const DEFAULT_EXTENSIONS_CONFIG = [
+    { buildingID: 0,  displayName: 'Feuerwache',           ausbauten: [0] },
+    { buildingID: 18, displayName: 'Feuerwache (Klein)',   ausbauten: [0] },
+    { buildingID: 6,  displayName: 'Polizeiwache',         ausbauten: [0,1,2,3,4,5,6,7,8,9] },
+    { buildingID: 19, displayName: 'Polizeiwache (Klein)', ausbauten: [0,1,2,3,4,5,6,7,8,9] },
+    { buildingID: 16, displayName: 'Polizeizellen',        ausbauten: [0,1,2,3,4,5,6,7,8,9] },
+    { buildingID: 11, displayName: 'Bereitschaftspolizei', ausbauten: [0,1,2,3] },
+    { buildingID: 9,  displayName: 'THW-Ortsverband',      ausbauten: [0,1,2,3] },
+    { buildingID: 4,  displayName: 'Krankenhaus',          ausbauten: [0,1,2] },
+    { buildingID: 12, displayName: 'Schnelleinsatzgruppe', ausbauten: [0,1,2,3] },
+  ];
+
+  const buildingsIDToIgnore = [4,1,3,8,10]; // wie vorher
 
   //----------------------------------------------
   // HILFSFUNKTIONEN
   //----------------------------------------------
   function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
-  async function getBuildingsOfLeitstelle(leitstellenId) {
+  // ---------- Autobuy Extensions – Bottom Progress Bar ----------
+  function ensureAbeStyles() {
+    if (document.getElementById('abe-style')) return;
+    const s = document.createElement('style');
+    s.id = 'abe-style';
+    s.textContent = `
+      #abe-nav { position: fixed; left:0; right:0; bottom:0; background:#f8f8f8; border-top:1px solid #e7e7e7; z-index:2147483000; padding:6px 10px; }
+      body.abe-hasbar { padding-bottom: 40px !important; }
+      #abe-wrap { display:flex; align-items:center; gap:12px; }
+      #abe-state { min-width:240px; font-size:13px; }
+      #abe-progress { flex:1; height:12px; background:#eee; border-radius:4px; overflow:hidden; }
+      #abe-bar-ok  { height:100%; background:#5cb85c; width:0%; }
+      #abe-bar-err { height:100%; background:#d9534f; width:0%; }
+    `;
+    document.head.appendChild(s);
+  }
+
+  function abeCreateNavbar() {
+    if (document.getElementById('abe-nav')) return;
+    ensureAbeStyles();
+    const nav = document.createElement('div'); nav.id = 'abe-nav';
+    const wrap = document.createElement('div'); wrap.id = 'abe-wrap';
+    const label = document.createElement('span'); label.id = 'abe-state'; label.className = 'label label-info'; label.textContent = 'Bereit';
+    const progress = document.createElement('div'); progress.id = 'abe-progress';
+    const ok = document.createElement('div'); ok.id = 'abe-bar-ok';
+    const err = document.createElement('div'); err.id = 'abe-bar-err';
+    progress.append(ok, err);
+    wrap.append(label, progress);
+    nav.append(wrap);
+    document.body.append(nav);
+    document.body.classList.add('abe-hasbar');
+  }
+
+  function abeDestroyNavbar() {
+    document.getElementById('abe-nav')?.remove();
+    document.body.classList.remove('abe-hasbar');
+  }
+
+  function abeSetState(text, cls = 'info') {
+    const l = document.getElementById('abe-state');
+    if (!l) return;
+    l.className = `label label-${cls}`;
+    l.textContent = text;
+  }
+
+  function abeUpdateProgress(ok, err, total, title) {
+    const okBar = document.getElementById('abe-bar-ok');
+    const errBar = document.getElementById('abe-bar-err');
+    const label = document.getElementById('abe-state');
+    if (!okBar || !errBar || !label) return;
+
+    const t = Math.max(total, 1);
+    okBar.style.width  = `${(ok  / t) * 100}%`;
+    errBar.style.width = `${(err / t) * 100}%`;
+
+    const done = ok + err;
+    label.textContent = done === total ? `${done}/${total} fertig` : `${done}/${total} Gebäude`;
+    if (title) label.title = title;
+  }
+
+  function findDefaultConfigForType(typeId) {
+    return DEFAULT_EXTENSIONS_CONFIG.find(c => c.buildingID === Number(typeId)) || null;
+  }
+
+  function parseStoredExtensions(raw) {
+    if (!raw) return [];
+[];
+    // Versuch JSON-Array (wie im Fahrzeug-Script)
+    try {
+      const v = JSON.parse(raw);
+      if (Array.isArray(v)) {
+        return v
+          .map(x => parseInt(x, 10))
+          .filter(n => Number.isInteger(n));
+      }
+    } catch {}
+    // Fallback: kommagetrennt
+    return String(raw)
+      .split(/[,\s;]+/)
+      .map(s => parseInt(s, 10))
+      .filter(n => Number.isInteger(n));
+  }
+
+  async function getConfiguredDelays() {
+    const dAction   = Number(await GM_getValue(KEY_DELAY_PER_ACTION,   DEFAULT_DELAY_PER_ACTION))   || DEFAULT_DELAY_PER_ACTION;
+    const dBuilding = Number(await GM_getValue(KEY_DELAY_PER_BUILDING, DEFAULT_DELAY_PER_BUILDING)) || DEFAULT_DELAY_PER_BUILDING;
+    const dFetch    = Number(await GM_getValue(KEY_DELAY_AFTER_FETCH,  DEFAULT_DELAY_AFTER_FETCH))  || DEFAULT_DELAY_AFTER_FETCH;
+    return { DELAY_PER_ACTION: dAction, DELAY_PER_BUILDING: dBuilding, DELAY_AFTER_FETCH: dFetch };
+  }
+
+  async function getConfigForType(typeId) {
+    const key = KEY_AUSBAUTEN_PREFIX + String(typeId);
+    const raw = await GM_getValue(key, '[]');
+    let ausbauten = parseStoredExtensions(raw);
+
+    const def = findDefaultConfigForType(typeId);
+
+    if (!ausbauten.length && def && Array.isArray(def.ausbauten)) {
+      ausbauten = def.ausbauten.slice();
+    }
+
+    if (!def && !ausbauten.length) return null;
+
+    return {
+      buildingID: Number(typeId),
+      displayName: def?.displayName || `Typ ${typeId}`,
+      ausbauten,
+      spezialisierung: def?.spezialisierung || [],
+      lager: def?.lager || []
+    };
+  }
+
+  // SETTINGS-SEITE
+  if (location.pathname.startsWith('/settings/index')) {
+
+    // 1) Select-Definition für addOptions (Optik)
+    const typeSelects = BUILDING_TYPES.map(t => {
+      const baseOpts = EXT_OPTIONS_BY_TYPE[t.id] || GENERIC_OPTIONS;
+
+      const options = baseOpts.map(o => ({
+        value: String(o.value),
+        label: o.label,
+        text:  o.label,
+        name:  o.label
+      }));
+
+      return {
+        type: 'select',
+        key: KEY_AUSBAUTEN_PREFIX + t.id,
+        label: `${t.id} ${t.label} – Ausbauten`,
+        title: 'Mehrfachauswahl (Strg/Cmd zum Markieren mehrerer Optionen)',
+        multiple: true,
+        options
+      };
+    });
+
+    await addOptions({
+      identifier: SETTINGS_IDENTIFIER,
+      title: 'Autobuy Extensions',
+      settings: [
+        { type: 'header', text: 'Ausbauten je Gebäudetyp' },
+        ...typeSelects,
+        { type: 'header', text: 'Ablauf / Delays' },
+        {
+          type: 'number',
+          key: KEY_DELAY_PER_ACTION,
+          default: DEFAULT_DELAY_PER_ACTION,
+          min: 0,
+          max: 5000,
+          label: 'Delay pro Kaufaktion [ms]'
+        },
+        {
+          type: 'number',
+          key: KEY_DELAY_PER_BUILDING,
+          default: DEFAULT_DELAY_PER_BUILDING,
+          min: 0,
+          max: 5000,
+          label: 'Delay pro Gebäude [ms]'
+        },
+        {
+          type: 'number',
+          key: KEY_DELAY_AFTER_FETCH,
+          default: DEFAULT_DELAY_AFTER_FETCH,
+          min: 0,
+          max: 5000,
+          label: 'Delay nach Seitenabruf [ms] (Leitstelle)'
+        }
+      ]
+    });
+
+    // 2) Nach dem Aufbau: Werte selbst laden und speichern
+    const panel = document.getElementById(SETTINGS_IDENTIFIER);
+    if (!panel) return;
+
+    async function initSelectForType(typeId) {
+      const key = KEY_AUSBAUTEN_PREFIX + String(typeId);
+
+      // passenden <select multiple> über Label finden
+      const labelTextStart = `${typeId} `;
+      const formGroups = panel.querySelectorAll('.form-group, .setting, div');
+
+      let select = null;
+      for (const fg of formGroups) {
+        const label = fg.querySelector('label');
+        if (!label) continue;
+        const txt = label.textContent.trim();
+        if (!txt.startsWith(labelTextStart)) continue;
+        const s = fg.querySelector('select[multiple]');
+        if (s) { select = s; break; }
+      }
+      if (!select) return;
+
+      // gespeicherte Werte holen
+      const raw = await GM_getValue(key, '[]');
+      const selectedIds = parseStoredExtensions(raw);
+
+      if (selectedIds.length) {
+        for (const opt of select.options) {
+          const v = parseInt(opt.value, 10);
+          opt.selected = selectedIds.includes(v);
+        }
+        // Multiselect-UI updaten
+        select.dispatchEvent(new Event('change'));
+      }
+
+      // beim Ändern speichern (als JSON-Array)
+      select.addEventListener('change', async () => {
+        const vals = Array.from(select.selectedOptions)
+          .map(o => parseInt(o.value, 10))
+          .filter(n => Number.isInteger(n));
+        await GM_setValue(key, JSON.stringify(vals));
+      });
+    }
+
+    for (const t of BUILDING_TYPES) {
+      await initSelectForType(t.id);
+    }
+
+    return;
+  }
+
+  //----------------------------------------------
+  // GEBÄUDE LADEN (HTML)
+  //----------------------------------------------
+  async function getBuildingsOfLeitstelle(leitstellenId, DELAY_AFTER_FETCH) {
     let out = [];
     try {
       const res = await fetch(`/buildings/${leitstellenId}/leitstelle-buildings`);
@@ -112,13 +507,14 @@
     return out;
   }
 
-  // Hilfsfunktionen zum Prüfen vorhandener Buttons
+  //----------------------------------------------
+  // VERFÜGBARE AUSBAUTEN / SPEZ / LAGER
+  //----------------------------------------------
   async function getAvailableExtensions(buildingId) {
     const res = await fetch(`/buildings/${buildingId}`);
     const html = await res.text();
     const doc = new DOMParser().parseFromString(html, "text/html");
 
-    // Ausbauten
     const extensions = Array.from(doc.querySelectorAll(`a[href*="/extension/credits/"]`))
       .map(a => {
         const match = a.getAttribute("href").match(/credits\/(\d+)\?/);
@@ -126,17 +522,15 @@
       })
       .filter(id => id !== null);
 
-    // Spezialisierungen
     const specs = Array.from(doc.querySelectorAll(`a[href*="/building_specializations"]`))
       .map(a => {
         if (a.href.includes("factory_fire_brigade")) return "factory_fire_brigade";
-        if (a.href.includes("airport")) return "airport";
-        if (a.href.includes("water_rescue")) return "water_rescue";
+        if (a.href.includes("airport"))             return "airport";
+        if (a.href.includes("water_rescue"))        return "water_rescue";
         return null;
       })
       .filter(x => x);
 
-    // Lager
     const storages = Array.from(doc.querySelectorAll(`a[href*="/storage_upgrade/credits/"]`))
       .map(a => {
         const href = a.getAttribute("href");
@@ -149,161 +543,203 @@
     return { extensions, specs, storages };
   }
 
-  async function autobuyExtensionsForLeitstelle(leitstellenId, statusDiv) {
-    const buildings = await getBuildingsOfLeitstelle(leitstellenId);
-    const total = buildings.length;
-    let processed = 0;
+  async function extendBuilding(buildingId, config, DELAY_PER_ACTION) {
+    if (!config) return;
 
-    for (const b of buildings) {
-      processed++;
-      if (!b.type) {
-        statusDiv.innerText = `Überspringe ${b.name} (${b.id}) – kein Typ ermittelt`;
-        continue;
+    // AUSBAUTEN
+    if (config.ausbauten && config.ausbauten.length) {
+      for (const a of config.ausbauten) {
+        let available = await getAvailableExtensions(buildingId);
+
+        if (available.extensions.includes(a)) {
+          await $.post(`/buildings/${buildingId}/extension/credits/${a}?redirect_building_id=${buildingId}`, {
+            "_method": "post",
+            "authenticity_token": $("meta[name=csrf-token]").attr("content")
+          });
+          await delay(DELAY_PER_ACTION);
+          available = await getAvailableExtensions(buildingId);
+        }
       }
-
-      const config = extensionsConfigurations.find(c => c.buildingID == Number(b.type));
-      if (!config) {
-        statusDiv.innerText = `(${processed}/${total}) Überspringe ${b.name}`;
-        await delay(DELAY_PER_BUILDING);
-        continue;
-      }
-
-      statusDiv.innerText = `(${processed}/${total}) Bearbeite ${b.name} …`;
-      await extendBuilding(b.id, config);
-      await delay(DELAY_PER_BUILDING);
     }
 
-    statusDiv.innerText = "✅ Autobuy Extensions abgeschlossen!";
-  }
+    // SPEZIALISIERUNG (falls in Defaults genutzt)
+    if (config.spezialisierung && config.spezialisierung.length) {
+      for (const s of config.spezialisierung) {
+        let type = "";
+        if (s == 0 || s === "factory_fire_brigade") type = "factory_fire_brigade";
+        if (s == 1 || s === "airport")               type = "airport";
+        if (s == 2 || s === "water_rescue")          type = "water_rescue";
+        if (!type) continue;
 
-async function extendBuilding(buildingId, config) {
-  // --- AUSBAUTEN: vor JEDEM Kauf neu prüfen, was gerade verfügbar ist ---
-  if (config.ausbauten) {
-    for (const a of config.ausbauten) {
-      // aktuelles Angebot laden
-      let available = await getAvailableExtensions(buildingId);
+        const availNow = await getAvailableExtensions(buildingId);
+        if (!availNow.specs.includes(type)) continue;
 
-      // wenn diese Ausbau-ID jetzt kaufbar ist -> kaufen
-      if (available.extensions.includes(a)) {
-        await $.post(`/buildings/${buildingId}/extension/credits/${a}?redirect_building_id=${buildingId}`, {
+        await $.post(`/building_specializations?building_id=${buildingId}&pay_with=credits&type=${type}`, {
           "_method": "post",
           "authenticity_token": $("meta[name=csrf-token]").attr("content")
         });
         await delay(DELAY_PER_ACTION);
-
-        // nach dem Kauf erneut laden, damit z.B. die NÄCHSTE Zelle sichtbar wird
-        available = await getAvailableExtensions(buildingId);
       }
-      // falls nicht verfügbar, einfach weiter (bereits gebaut/noch gesperrt)
+    }
+
+    // LAGER (falls genutzt)
+    if (config.lager && config.lager.length) {
+      for (const l of config.lager) {
+        const storage_name =
+          (l == 0 || l === "initial_containers") ? "initial_containers" :
+          (typeof l === "string" && l.startsWith("additional_containers_"))
+            ? l
+            : `additional_containers_${l}`;
+
+        const availNow = await getAvailableExtensions(buildingId);
+        if (!availNow.storages.includes(storage_name)) continue;
+
+        await $.post(`/buildings/${buildingId}/storage_upgrade/credits/${storage_name}?redirect_building_id=${buildingId}`, {
+          "_method": "post",
+          "authenticity_token": $("meta[name=csrf-token]").attr("content")
+        });
+        await delay(DELAY_PER_ACTION);
+      }
     }
   }
 
-  // --- SPEZIALISIERUNG: einmalig, aber trotzdem vor Kauf prüfen ---
-  if (config.spezialisierung) {
-    for (const s of config.spezialisierung) {
-      let type = "";
-      if (s == 0) type = "factory_fire_brigade";
-      if (s == 1) type = "airport";
-      if (s == 2) type = "water_rescue";
-      if (!type) continue;
+  async function autobuyExtensionsForLeitstelle(leitstellenId, DELAY_PER_ACTION, DELAY_PER_BUILDING, DELAY_AFTER_FETCH) {
+    abeSetState('Lade Gebäudeliste…', 'info');
 
-      // frisch prüfen
-      const availNow = await getAvailableExtensions(buildingId);
-      if (!availNow.specs.includes(type)) continue; // schon gesetzt -> skip
+    const buildings = await getBuildingsOfLeitstelle(leitstellenId, DELAY_AFTER_FETCH);
+    const total = buildings.length;
 
-      await $.post(`/building_specializations?building_id=${buildingId}&pay_with=credits&type=${type}`, {
-        "_method": "post",
-        "authenticity_token": $("meta[name=csrf-token]").attr("content")
-      });
-      await delay(DELAY_PER_ACTION);
+    let ok = 0, err = 0;
+
+    for (const b of buildings) {
+      const config = b.type ? await getConfigForType(Number(b.type)) : null;
+      const hasWork = config && (
+        (config.ausbauten?.length) ||
+        (config.spezialisierung?.length) ||
+        (config.lager?.length)
+      );
+
+      abeSetState(`Bearbeite ${b.name}…`, 'info');
+      abeUpdateProgress(ok, err, total, b.name);
+
+      if (!hasWork) {
+        ok++;
+        abeUpdateProgress(ok, err, total, b.name);
+        await delay(DELAY_PER_BUILDING);
+        continue;
+      }
+
+      try {
+        await extendBuilding(b.id, config, DELAY_PER_ACTION);
+        ok++;
+      } catch {
+        err++;
+      }
+
+      abeUpdateProgress(ok, err, total, b.name);
+      await delay(DELAY_PER_BUILDING);
     }
+
+    abeSetState('Autobuy Extensions abgeschlossen', 'success');
+    setTimeout(abeDestroyNavbar, 1500);
   }
-
-  // --- LAGER: wie oben, vor Kauf prüfen (wegen stufenweiser Freischaltung) ---
-  if (config.lager) {
-    for (const l of config.lager) {
-      const storage_name = (l==0) ? "initial_containers" : `additional_containers_${l}`;
-
-      // frisch prüfen
-      const availNow = await getAvailableExtensions(buildingId);
-      if (!availNow.storages.includes(storage_name)) continue; // schon gebaut -> skip
-
-      await $.post(`/buildings/${buildingId}/storage_upgrade/credits/${storage_name}?redirect_building_id=${buildingId}`, {
-        "_method": "post",
-        "authenticity_token": $("meta[name=csrf-token]").attr("content")
-      });
-      await delay(DELAY_PER_ACTION);
-    }
-  }
-}
-
 
   //----------------------------------------------
-  // HAUPTLOGIK
+  // HAUPTLOGIK (Gebäudeseiten)
   //----------------------------------------------
-  const buildingId = window.location.href.replace("https://www.leitstellenspiel.de/buildings/", "");
-  const titleDiv = Array.from(document.getElementsByTagName("h1")).find(e => e.getAttribute("building_type") != undefined);
+  const titleDiv = Array.from(document.getElementsByTagName("h1"))
+    .find(e => e.getAttribute("building_type") != null);
   if (!titleDiv) return;
+
   const buildingTypeID = Number(titleDiv.getAttribute("building_type"));
+  const buildingId = window.location.href.replace("https://www.leitstellenspiel.de/buildings/", "");
+
+  const { DELAY_PER_ACTION, DELAY_PER_BUILDING, DELAY_AFTER_FETCH } = await getConfiguredDelays();
 
   // Leitstelle
   if (buildingTypeID === 7) {
-    let wrapperDIV = document.createElement("div");
-    wrapperDIV.innerText = "Leitstelle - Autobuy Extensions:";
-    wrapperDIV.style.padding = "15px 5px 15px 5px";
+    const wrapperDIV = document.createElement("div");
+    wrapperDIV.style.padding = "5px 0";
     titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
 
-    let btn = document.createElement("a");
+    const btn = document.createElement("a");
     btn.className = "btn btn-success btn-xs";
     btn.innerText = "Autobuy Extensions";
-    btn.style.margin = "5px";
     wrapperDIV.appendChild(btn);
 
-    let statusDiv = document.createElement("div");
-    statusDiv.style.marginTop = "10px";
-    statusDiv.style.fontWeight = "bold";
-    wrapperDIV.appendChild(statusDiv);
+    const btnSettings = document.createElement("a");
+    btnSettings.className = "btn btn-default btn-xs";
+    btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+    btnSettings.target = '_blank';
+    const cog = document.createElement('span');
+    cog.className = 'glyphicon glyphicon-cog';
+    cog.title = 'Einstellungen';
+    btnSettings.appendChild(cog);
+    wrapperDIV.appendChild(btnSettings);
 
     btn.addEventListener("click", async function () {
-      statusDiv.innerText = "🔄 Lade Gebäudeliste…";
-      await autobuyExtensionsForLeitstelle(buildingId, statusDiv);
+      abeCreateNavbar();
+      abeSetState('Starte Autobuy…', 'info');
+      abeUpdateProgress(0, 0, 1);
+      await autobuyExtensionsForLeitstelle(buildingId, DELAY_PER_ACTION, DELAY_PER_BUILDING, DELAY_AFTER_FETCH);
     });
+
     return;
   }
 
-  // Einzelne Wache
+  // Einzelgebäude
   if (buildingsIDToIgnore.indexOf(buildingTypeID) >= 0) return;
 
-  let wrapperDIV = document.createElement("div");
-  wrapperDIV.innerText = "Extension-Configs:";
+  const wrapperDIV = document.createElement("div");
+  wrapperDIV.innerText = "Autobuy Extensions:";
   wrapperDIV.style.padding = "15px 5px 15px 5px";
   titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
 
-  for (let i = 0; i < extensionsConfigurations.length; i++) {
-    if (extensionsConfigurations[i].buildingID == buildingTypeID) {
-      let btn = document.createElement("a");
-      btn.className = "btn btn-success btn-xs autoExtensionBuy";
-      btn.setAttribute("config_id", i);
-      btn.innerText = extensionsConfigurations[i].displayName;
-      btn.style.margin = "5px";
-      wrapperDIV.appendChild(btn);
+  const btn = document.createElement("a");
+  btn.className = "btn btn-success btn-xs";
+  btn.innerText = "Autobuy (laut Einstellungen)";
+  btn.style.margin = "5px";
+  wrapperDIV.appendChild(btn);
+
+  const btnSettings = document.createElement("a");
+  btnSettings.className = "btn btn-default btn-xs";
+  btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+  btnSettings.target = '_blank';
+  btnSettings.style.margin = "5px";
+  const cog2 = document.createElement('span');
+  cog2.className = 'glyphicon glyphicon-cog';
+  cog2.title = 'Einstellungen';
+  btnSettings.appendChild(cog2);
+  wrapperDIV.appendChild(btnSettings);
+
+  btn.addEventListener("click", async function () {
+    const config = await getConfigForType(buildingTypeID);
+    if (!config || (
+      !(config.ausbauten && config.ausbauten.length) &&
+      !(config.spezialisierung && config.spezialisierung.length) &&
+      !(config.lager && config.lager.length)
+    )) {
+      alert('Für diesen Gebäudetyp sind keine Ausbauten in den Einstellungen hinterlegt.');
+      return;
     }
-  }
 
-  document.querySelectorAll(".autoExtensionBuy").forEach(function (element) {
-    element.addEventListener("click", async function () {
-      const config = extensionsConfigurations[element.getAttribute("config_id")];
-      let statusDiv = document.createElement("div");
-      statusDiv.style.marginTop = "10px";
-      statusDiv.style.fontWeight = "bold";
-      wrapperDIV.appendChild(statusDiv);
+    abeCreateNavbar();
+    abeSetState('Kaufe Ausbauten…', 'info');
+    abeUpdateProgress(0, 0, 1);
 
-      statusDiv.innerText = "🚀 Kaufe Ausbauten...";
-      await extendBuilding(buildingId, config);
-      statusDiv.innerText = "✅ Fertig!";
-      await delay(500);
+    try {
+      await extendBuilding(buildingId, config, DELAY_PER_ACTION);
+      abeUpdateProgress(1, 0, 1);
+      abeSetState('Fertig', 'success');
+    } catch {
+      abeUpdateProgress(0, 1, 1);
+      abeSetState('Fehler', 'danger');
+    }
+
+    setTimeout(() => {
+      abeDestroyNavbar();
       location.reload();
-    });
+    }, 1200);
   });
 
 })();
