@@ -1,0 +1,341 @@
+// ==UserScript==
+// @name         LSS Einsatzmodus Performance
+// @namespace    NoOne
+// @version      1.0.0
+// @description  Blendet Karte, Gebäudeliste und Baukram aus, damit nur die Einsatzlisten aktiv bleiben.
+// @author       NoOne
+// @match        https://*.leitstellenspiel.de/*
+// @grant        GM_addStyle
+// @run-at       document-start
+// ==/UserScript==
+
+(() => {
+  'use strict';
+
+  const DEBUG = false;
+
+  const log = (...args) => {
+    if (DEBUG) console.log('[Einsatzmodus]', ...args);
+  };
+
+  function isBuildingUrl(url) {
+    if (!url) return false;
+    const text = String(url);
+
+    // Dinge, die ausdrücklich NICHT geblockt werden sollen
+    if (
+      /\/missions(\?|$|\/)/i.test(text) ||
+      /\/mission_markers(\?|$|\/)/i.test(text) ||
+      /\/mission_list/i.test(text) ||
+      /\/mission_lists/i.test(text) ||
+      /\/alliance_missions/i.test(text) ||
+      /\/vehicles\b/i.test(text) ||
+      /\/settings\b/i.test(text) ||
+      /\/profile\b/i.test(text) ||
+      /\/credits\b/i.test(text)
+    ) {
+      return false;
+    }
+
+    // Gebäudebezogene Endpunkte
+    return (
+      /\/api\/buildings/i.test(text) ||
+      /\/api\/v1\/buildings/i.test(text) ||
+      /\/buildings(\?|$|\/)/i.test(text) ||
+      /\/alliance_buildings(\?|$|\/)/i.test(text) ||
+      /building_list/i.test(text) ||
+      /building_marker/i.test(text) ||
+      /\/schools(\?|$|\/)/i.test(text)
+    );
+  }
+
+  function installFetchBlocker() {
+    const originalFetch = window.fetch;
+    if (typeof originalFetch !== 'function') return;
+
+    window.fetch = function (...args) {
+      const resource = args[0];
+      const url = typeof resource === 'string'
+        ? resource
+        : resource?.url || '';
+
+      if (isBuildingUrl(url)) {
+        log('fetch geblockt:', url);
+        return Promise.resolve(new Response('', {
+          status: 204,
+          statusText: 'No Content'
+        }));
+      }
+
+      return originalFetch.apply(this, args);
+    };
+  }
+
+  function installXhrBlocker() {
+    const OriginalXHR = window.XMLHttpRequest;
+    if (!OriginalXHR) return;
+
+    window.XMLHttpRequest = function () {
+      const xhr = new OriginalXHR();
+
+      let blocked = false;
+      let blockedReadyState = 0;
+      let blockedStatus = 0;
+      let blockedResponseText = '';
+      let blockedResponse = '';
+
+      const originalOpen = xhr.open;
+      const originalSend = xhr.send;
+
+      xhr.open = function (method, url, ...rest) {
+        blocked = isBuildingUrl(url);
+        if (blocked) {
+          blockedReadyState = 1;
+          xhr._einsatzmodus_blocked_url = url;
+          log('xhr geblockt:', url);
+          return;
+        }
+        return originalOpen.call(this, method, url, ...rest);
+      };
+
+      xhr.send = function (...args) {
+        if (!blocked) {
+          return originalSend.apply(this, args);
+        }
+
+        blockedStatus = 204;
+        blockedReadyState = 4;
+        blockedResponseText = '';
+        blockedResponse = '';
+
+        setTimeout(() => {
+          try {
+            if (typeof xhr.onreadystatechange === 'function') xhr.onreadystatechange();
+          } catch {}
+          try {
+            xhr.dispatchEvent?.(new Event('readystatechange'));
+          } catch {}
+          try {
+            if (typeof xhr.onload === 'function') xhr.onload();
+          } catch {}
+          try {
+            xhr.dispatchEvent?.(new Event('load'));
+          } catch {}
+          try {
+            xhr.dispatchEvent?.(new Event('loadend'));
+          } catch {}
+        }, 0);
+      };
+
+      Object.defineProperty(xhr, 'readyState', {
+        get() {
+          return blocked ? blockedReadyState : OriginalXHR.prototype.readyState;
+        },
+        configurable: true
+      });
+
+      Object.defineProperty(xhr, 'status', {
+        get() {
+          return blocked ? blockedStatus : OriginalXHR.prototype.status;
+        },
+        configurable: true
+      });
+
+      Object.defineProperty(xhr, 'responseText', {
+        get() {
+          return blocked ? blockedResponseText : OriginalXHR.prototype.responseText;
+        },
+        configurable: true
+      });
+
+      Object.defineProperty(xhr, 'response', {
+        get() {
+          return blocked ? blockedResponse : OriginalXHR.prototype.response;
+        },
+        configurable: true
+      });
+
+      return xhr;
+    };
+
+    window.XMLHttpRequest.UNSENT = OriginalXHR.UNSENT;
+    window.XMLHttpRequest.OPENED = OriginalXHR.OPENED;
+    window.XMLHttpRequest.HEADERS_RECEIVED = OriginalXHR.HEADERS_RECEIVED;
+    window.XMLHttpRequest.LOADING = OriginalXHR.LOADING;
+    window.XMLHttpRequest.DONE = OriginalXHR.DONE;
+  }
+
+  function hideNonMissionUiCss() {
+    GM_addStyle(`
+      /* Karte + Map-Container */
+      #map,
+      #map_outer,
+      #leaflet_map,
+      .leaflet-container,
+      .leaflet-pane,
+      .leaflet-control-container {
+        display: none !important;
+        visibility: hidden !important;
+      }
+
+      /* Gebäude- und Bau-Bereiche */
+      #buildings,
+      #buildings_outer,
+      #building_panel,
+      #new_building,
+      #all_buildings_table,
+      #building_list,
+      .building_list,
+      .building_panel,
+      .buildings-panel,
+      .building_search {
+        display: none !important;
+        visibility: hidden !important;
+      }
+
+      /* Gebäudeseitenleiste / Listen */
+      #sidebar_buildings,
+      #building_sidebar,
+      #building_list_panel,
+      .buildingSideBar,
+      .building-list,
+      .buildingMarkerPanel {
+        display: none !important;
+        visibility: hidden !important;
+      }
+
+      /* Optional: Footer/sonstiger Kram schlanker */
+      .map_position_button,
+      .map_ad,
+      .building_navigation {
+        display: none !important;
+      }
+    `);
+  }
+
+  function removeNonMissionUi() {
+    const ids = [
+      'map',
+      'map_outer',
+      'leaflet_map',
+      'buildings',
+      'buildings_outer',
+      'building_panel',
+      'new_building',
+      'all_buildings_table',
+      'building_list',
+      'sidebar_buildings',
+      'building_sidebar',
+      'building_list_panel'
+    ];
+
+    for (const id of ids) {
+      document.getElementById(id)?.remove();
+    }
+
+    const selectors = [
+      '.leaflet-container',
+      '.leaflet-control-container',
+      '.building_list',
+      '.building_panel',
+      '.buildings-panel',
+      '.building_search',
+      '.buildingSideBar',
+      '.building-list',
+      '.buildingMarkerPanel'
+    ];
+
+    for (const selector of selectors) {
+      document.querySelectorAll(selector).forEach(el => el.remove());
+    }
+  }
+
+  function keepMissionUiVisible() {
+    const ids = [
+      'missions-panel',
+      'missions-panel-main',
+      'mission_list',
+      'mission_list_alliance',
+      'mission_list_alliance_event',
+      'mission_list_sicherheitswache',
+      'mission_list_sicherheitswache_alliance',
+      'mission_list_combined'
+    ];
+
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.style.display = '';
+        el.style.visibility = '';
+      }
+    }
+  }
+
+  function addBanner() {
+    const insert = () => {
+      if (!document.body || document.getElementById('einsatzmodusBanner')) return;
+
+      const box = document.createElement('div');
+      box.id = 'einsatzmodusBanner';
+      box.textContent = 'Einsatzmodus aktiv – Karte und Gebäude ausgeblendet.';
+      box.style.cssText = `
+        position: fixed;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 999999;
+        background: #222;
+        color: #fff;
+        border: 1px solid #555;
+        border-radius: 10px;
+        padding: 8px 14px;
+        font: 13px/1.3 Arial, sans-serif;
+        box-shadow: 0 2px 10px rgba(0,0,0,.3);
+        pointer-events: none;
+      `;
+      document.body.appendChild(box);
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', insert, { once: true });
+    } else {
+      insert();
+    }
+  }
+
+  function installDomCleaner() {
+    const cleanup = () => {
+      removeNonMissionUi();
+      keepMissionUiVisible();
+    };
+
+    const start = () => {
+      cleanup();
+
+      const observer = new MutationObserver(() => cleanup());
+      observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true
+      });
+
+      setInterval(cleanup, 1500);
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', start, { once: true });
+    } else {
+      start();
+    }
+  }
+
+  function init() {
+    hideNonMissionUiCss();
+    installFetchBlocker();
+    installXhrBlocker();
+    installDomCleaner();
+    addBanner();
+    log('Einsatzmodus aktiv');
+  }
+
+  init();
+})();
