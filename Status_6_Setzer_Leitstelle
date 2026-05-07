@@ -1,0 +1,661 @@
+// ==UserScript==
+// @name         Leitstelle Status 6 vehicles (Settings + Dropdown + Bottom-Bar)
+// @namespace    NilsPe.status6.vehicles
+// @version      1.5.1
+// @description  Setzt Fahrzeuge nach Typ auf Status 6 – Auswahl per Multi-Select (Klarname) auf /settings/index + Fortschrittsbalken unten
+// @author       NilsPe
+// @match        https://www.leitstellenspiel.de/buildings/*
+// @match        https://www.leitstellenspiel.de/settings/index*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @require      https://update.greasyfork.org/scripts/528065/Skripteinstellungen.user.js
+// ==/UserScript==
+
+(async function () {
+  'use strict';
+
+  const SETTINGS_IDENTIFIER = 'status6_vehicles_by_type';
+
+  const KEY_SELECTED_TYPES = 's6_type_ids_selected';
+  const KEY_DELAY_MS = 's6_min_delay_ms';
+  const KEY_CONCURRENCY = 's6_concurrency';
+  const KEY_KEEP_PER_STATION = 's6_keep_per_station';
+
+  const DEFAULT_SELECTED = [2,5,10,12,14,27,30,33,34,40,42,43,44,45,53,57,61,63,64,70,91,99,100,101,102,109,122,123,127,144,145,146,147];
+  const DEFAULT_DELAY_MS = 100;
+  const DEFAULT_CONCURRENCY = 5;
+  const DEFAULT_KEEP_PER_STATION = 0;
+
+  const VEHICLE_OPTIONS = [
+    { value: '2', label: 'DLK 23' },
+    { value: '5', label: 'GW-A' },
+    { value: '10', label: 'GW-Öl' },
+    { value: '12', label: 'GW-Messtechnik' },
+    { value: '14', label: 'SW 2000' },
+    { value: '27', label: 'GW-Gefahrgut' },
+    { value: '30', label: 'HLF 20' },
+    { value: '33', label: 'GW-Höhenrettung' },
+    { value: '34', label: 'ELW 2' },
+    { value: '40', label: 'MTW-TZ' },
+    { value: '42', label: 'LKW K 9' },
+    { value: '43', label: 'BRmG R' },
+    { value: '44', label: 'Anh DLE' },
+    { value: '45', label: 'MLW 5' },
+    { value: '53', label: 'Dekon-P' },
+    { value: '57', label: 'FwK' },
+    { value: '63', label: 'GW-Taucher' },
+    { value: '61', label: 'Polizeihubschrauber' },
+    { value: '64', label: 'GW-Wasserrettung' },
+    { value: '70', label: 'MZB' },
+    { value: '91', label: 'Rettungshundefahrzeug' },
+    { value: '99', label: 'LKW 7 Lbw (alt)' },
+    { value: '100', label: 'MLW 4' },
+    { value: '101', label: 'Anh SwPu' },
+    { value: '102', label: 'Anh 7' },
+    { value: '109', label: 'MzGW SB' },
+    { value: '122', label: 'LKW 7 Lbw (FGr E)' },
+    { value: '123', label: 'LKW 7 Lbw (FGr WP)' },
+    { value: '127', label: 'GW UAS' },
+    { value: '144', label: 'FüKomKW (THW)' },
+    { value: '145', label: 'Anh FüLa' },
+    { value: '146', label: 'FmKw' },
+    { value: '147', label: 'MTW OV' },
+    { value: '51', label: 'FüKw' },
+    { value: '35', label: 'leBefKw' },
+    { value: '72', label: 'WaWe' },
+    { value: '94', label: 'DhuFüKw' },
+    { value: '52', label: 'GefKw' },
+  ];
+
+  function clamp(n, min, max) {
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function parseStoredSelected(raw) {
+    if (!raw) return [];
+
+    try {
+      const v = JSON.parse(raw);
+      if (Array.isArray(v)) {
+        return v.map(x => parseInt(x, 10)).filter(Number.isInteger);
+      }
+    } catch {}
+
+    return String(raw)
+      .split(/[,\s;]+/)
+      .map(s => parseInt(s, 10))
+      .filter(Number.isInteger);
+  }
+
+  async function loadConfig() {
+    const rawSel = await GM_getValue(KEY_SELECTED_TYPES, JSON.stringify(DEFAULT_SELECTED));
+    const selected = parseStoredSelected(rawSel);
+
+    const delay = Number(await GM_getValue(KEY_DELAY_MS, DEFAULT_DELAY_MS));
+    const conc = Number(await GM_getValue(KEY_CONCURRENCY, DEFAULT_CONCURRENCY));
+    const keep = Number(await GM_getValue(KEY_KEEP_PER_STATION, DEFAULT_KEEP_PER_STATION));
+
+    return {
+      VEHICLE_TYPE_IDS: Array.from(new Set(selected)).filter(n => n >= 0),
+      MIN_DELAY_MS: clamp(Number.isFinite(delay) ? delay : 0, 0, 5000),
+      CONCURRENCY: clamp(Number.isFinite(conc) ? conc : 1, 1, 20),
+      KEEP_PER_STATION: clamp(Number.isFinite(keep) ? keep : 0, 0, 100),
+    };
+  }
+
+  function ensureStyles() {
+    if (document.getElementById('s6-style')) return;
+
+    const s = document.createElement('style');
+    s.id = 's6-style';
+
+    s.textContent = `
+      #s6-nav {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: #f8f8f8;
+        border-top: 1px solid #e7e7e7;
+        z-index: 2147483000;
+        padding: 6px 10px;
+      }
+
+      body.s6-hasbar {
+        padding-bottom: 40px !important;
+      }
+
+      #s6-wrap {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      #s6-state {
+        min-width: 240px;
+        font-size: 13px;
+      }
+
+      #s6-progress {
+        flex: 1;
+        height: 12px;
+        margin: 0;
+        background: #eee;
+        border-radius: 4px;
+        overflow: hidden;
+        display: flex;
+      }
+
+      #s6-bar-ok {
+        height: 100%;
+        background: #5cb85c;
+        width: 0%;
+      }
+
+      #s6-bar-err {
+        height: 100%;
+        background: #d9534f;
+        width: 0%;
+      }
+    `;
+
+    document.head.appendChild(s);
+  }
+
+  function createNavbar() {
+    if (document.getElementById('s6-nav')) return;
+
+    ensureStyles();
+
+    const nav = document.createElement('div');
+    nav.id = 's6-nav';
+
+    const wrap = document.createElement('div');
+    wrap.id = 's6-wrap';
+
+    const label = document.createElement('span');
+    label.id = 's6-state';
+    label.className = 'label label-info';
+    label.textContent = 'Bereit';
+
+    const progress = document.createElement('div');
+    progress.id = 's6-progress';
+
+    const ok = document.createElement('div');
+    ok.id = 's6-bar-ok';
+
+    const err = document.createElement('div');
+    err.id = 's6-bar-err';
+
+    progress.append(ok, err);
+    wrap.append(label, progress);
+    nav.append(wrap);
+
+    document.body.append(nav);
+    document.body.classList.add('s6-hasbar');
+  }
+
+  function destroyNavbar() {
+    document.getElementById('s6-nav')?.remove();
+    document.body.classList.remove('s6-hasbar');
+  }
+
+  function setState(text, cls = 'info', title) {
+    const label = document.getElementById('s6-state');
+    if (!label) return;
+
+    label.className = `label label-${cls}`;
+    label.textContent = text;
+
+    if (title) label.title = title;
+  }
+
+  function updateProgress(ok, err, total, msg) {
+    const okBar = document.getElementById('s6-bar-ok');
+    const errBar = document.getElementById('s6-bar-err');
+    const label = document.getElementById('s6-state');
+
+    if (!okBar || !errBar || !label) return;
+
+    const safeTotal = Math.max(total, 1);
+
+    okBar.style.width = `${(ok / safeTotal) * 100}%`;
+    errBar.style.width = `${(err / safeTotal) * 100}%`;
+
+    const done = ok + err;
+
+    label.className = done === total
+      ? 'label label-success'
+      : 'label label-warning';
+
+    label.textContent = done === total
+      ? `${done}/${total} fertig`
+      : `${done}/${total} Fahrzeuge`;
+
+    if (msg) label.title = msg;
+  }
+
+  if (location.pathname.startsWith('/settings/index')) {
+
+    await addOptions({
+      identifier: SETTINGS_IDENTIFIER,
+      title: 'Status 6 Vehicles',
+      settings: [
+        { type: 'header', text: 'Fahrzeugtypen' },
+
+        {
+          type: 'select',
+          key: KEY_SELECTED_TYPES,
+          label: 'Fahrzeugtypen auswählen',
+          title: 'Mehrfachauswahl (Strg/Cmd für mehrere)',
+          multiple: true,
+          options: VEHICLE_OPTIONS.map(o => ({
+            value: String(o.value),
+            label: o.label,
+            text: o.label,
+            name: o.label,
+          })),
+        },
+
+        {
+          type: 'number',
+          key: KEY_KEEP_PER_STATION,
+          default: DEFAULT_KEEP_PER_STATION,
+          min: 0,
+          max: 100,
+          label: 'Fahrzeuge pro Wache behalten'
+        },
+
+        { type: 'header', text: 'Performance' },
+
+        {
+          type: 'number',
+          key: KEY_DELAY_MS,
+          default: DEFAULT_DELAY_MS,
+          min: 0,
+          max: 5000,
+          label: 'Min. Delay je Worker [ms]'
+        },
+
+        {
+          type: 'number',
+          key: KEY_CONCURRENCY,
+          default: DEFAULT_CONCURRENCY,
+          min: 1,
+          max: 20,
+          label: 'Parallelität (Worker)'
+        }
+      ]
+    });
+
+    const panel = document.getElementById(SETTINGS_IDENTIFIER);
+    if (!panel) return;
+
+    const select = panel.querySelector('select[multiple]');
+    if (!select) return;
+
+    const raw = await GM_getValue(KEY_SELECTED_TYPES, JSON.stringify(DEFAULT_SELECTED));
+    const selectedIds = parseStoredSelected(raw);
+
+    for (const opt of select.options) {
+      const v = parseInt(opt.value, 10);
+      opt.selected = selectedIds.includes(v);
+    }
+
+    select.dispatchEvent(new Event('change'));
+
+    select.addEventListener('change', async () => {
+      const vals = Array.from(select.selectedOptions)
+        .map(o => parseInt(o.value, 10))
+        .filter(Number.isInteger);
+
+      await GM_setValue(KEY_SELECTED_TYPES, JSON.stringify(vals));
+    });
+
+    return;
+  }
+
+  const UI = {
+    btnPreview: 'lss-preview-status6-by-type-btn',
+    btnStatus6: 'lss-status6-by-type-btn',
+    btnSettings: 'lss-status6-by-type-settings-btn',
+    markClass: 'lss-status6-marked',
+  };
+
+  function inVehicleTab() {
+    return !!document.querySelector('#vehicle_table');
+  }
+
+  function getMode() {
+    return document.body.classList.contains('dark') ? 'dark' : 'light';
+  }
+
+  function getVehicleTypeIdFromRow(row) {
+    const img = row.querySelector('td img[vehicle_type_id]');
+    return img?.getAttribute('vehicle_type_id') || null;
+  }
+
+  function getVehicleIdFromRow(row) {
+    const link = row.querySelector('a[href^="/vehicles/"]');
+    return link?.getAttribute('href')?.split('/').pop() || null;
+  }
+
+  function getFMSFromRow(row) {
+    const fms = row.querySelector('.building_list_fms');
+    if (!fms) return null;
+
+    const match = Array.from(fms.classList)
+      .join(' ')
+      .match(/building_list_fms_(\d+)/);
+
+    return match ? parseInt(match[1], 10) : null;
+  }
+
+  function getStationKeyFromRow(row) {
+    const buildingLink = row.querySelector('a[href*="/buildings/"]');
+
+    if (buildingLink) {
+      const href = buildingLink.getAttribute('href') || '';
+      const match = href.match(/\/buildings\/(\d+)/);
+
+      if (match) return `building:${match[1]}`;
+    }
+
+    const html = row.innerHTML || '';
+    const htmlMatch = html.match(/\/buildings\/(\d+)/);
+
+    if (htmlMatch) return `building:${htmlMatch[1]}`;
+
+    const buildingMatch = location.pathname.match(/^\/buildings\/(\d+)/);
+
+    if (buildingMatch) return `building:${buildingMatch[1]}`;
+
+    return `unknown-station:${getVehicleIdFromRow(row) || Math.random()}`;
+  }
+
+  function getMatchingRows(typeIds) {
+    const set = new Set(typeIds.map(String));
+    const table = document.querySelector('#vehicle_table');
+
+    if (!table) return [];
+
+    const rows = Array.from(table.querySelectorAll('tbody tr'));
+
+    return rows.filter(row => {
+      const typeId = getVehicleTypeIdFromRow(row);
+      const fms = getFMSFromRow(row);
+
+      return typeId && set.has(typeId) && fms !== 6;
+    });
+  }
+
+  function getRowsToSetStatus6(typeIds, keepPerStation = 0) {
+    const rows = getMatchingRows(typeIds);
+
+    if (keepPerStation <= 0) return rows;
+
+    const grouped = new Map();
+
+    for (const row of rows) {
+      const typeId = getVehicleTypeIdFromRow(row);
+      if (!typeId) continue;
+
+      const stationKey = getStationKeyFromRow(row);
+      const groupKey = `${stationKey}::type:${typeId}`;
+
+      if (!grouped.has(groupKey)) grouped.set(groupKey, []);
+      grouped.get(groupKey).push(row);
+    }
+
+    const result = [];
+
+    for (const [, groupRows] of grouped.entries()) {
+      result.push(...groupRows.slice(keepPerStation));
+    }
+
+    return result;
+  }
+
+  function clearMarks() {
+    document.querySelectorAll(`.${UI.markClass}`).forEach(el => {
+      el.classList.remove(UI.markClass);
+      el.style.outline = '';
+      el.style.background = '';
+    });
+  }
+
+  function markRows(rows) {
+    clearMarks();
+
+    const mode = getMode();
+
+    rows.forEach(row => {
+      row.classList.add(UI.markClass);
+
+      row.style.outline = `2px solid ${mode === 'dark' ? '#5bc0de' : '#f0ad4e'}`;
+
+      row.style.background = mode === 'dark'
+        ? 'rgba(91,192,222,0.1)'
+        : 'rgba(240,173,78,0.12)';
+    });
+  }
+
+  async function setRowsStatus6(rows, MIN_DELAY_MS, CONCURRENCY) {
+
+    const total = rows.length;
+
+    let ok = 0;
+    let err = 0;
+
+    createNavbar();
+
+    setState('Status 6 gestartet…', 'info');
+    updateProgress(ok, err, total);
+
+    const queue = rows
+      .map(row => ({
+        id: getVehicleIdFromRow(row),
+        row
+      }))
+      .filter(x => !!x.id);
+
+    async function worker() {
+
+      while (queue.length) {
+
+        const item = queue.shift();
+
+        let success = true;
+
+        try {
+
+          const res = await fetch(`/vehicles/${item.id}/set_fms/6`, {
+            method: 'GET',
+            credentials: 'include',
+            headers: {
+              'X-Requested-With': 'XMLHttpRequest'
+            }
+          });
+
+          if (!res || !res.ok) success = false;
+
+        } catch (e) {
+
+          success = false;
+
+          console.error(
+            `[Fehler] Status 6 fehlgeschlagen für ${item.id}`,
+            e
+          );
+        }
+
+        if (success) {
+          item.row?.remove();
+          ok++;
+        } else {
+          err++;
+        }
+
+        updateProgress(
+          ok,
+          err,
+          total,
+          `Letztes Fahrzeug: ${item.id}`
+        );
+
+        if (MIN_DELAY_MS > 0) {
+          await new Promise(r => setTimeout(r, MIN_DELAY_MS));
+        }
+      }
+    }
+
+    await Promise.all(
+      Array.from(
+        { length: Math.max(1, CONCURRENCY) },
+        () => worker()
+      )
+    );
+
+    clearMarks();
+
+    updateProgress(ok, err, total);
+
+    setState(
+      err ? 'Fertig (mit Fehlern)' : 'Fertig',
+      err ? 'warning' : 'success'
+    );
+
+    setTimeout(destroyNavbar, 1500);
+  }
+
+  function ensureButtons() {
+
+    const table = document.querySelector('#vehicle_table');
+    if (!table) return;
+
+    if (
+      document.getElementById(UI.btnPreview) ||
+      document.getElementById(UI.btnStatus6)
+    ) return;
+
+    const container = document.createElement('div');
+
+    container.style.display = 'flex';
+    container.style.margin = '8px 0';
+    container.style.gap = '8px';
+    container.style.alignItems = 'center';
+
+    const btnPrev = document.createElement('a');
+
+    btnPrev.id = UI.btnPreview;
+    btnPrev.className = 'btn btn-info btn-xs';
+    btnPrev.textContent = 'Vorschau markieren';
+
+    btnPrev.addEventListener('click', async () => {
+
+      const cfg = await loadConfig();
+
+      const rows = getRowsToSetStatus6(
+        cfg.VEHICLE_TYPE_IDS,
+        cfg.KEEP_PER_STATION
+      );
+
+      if (!rows.length) {
+        alert(
+          'Keine Fahrzeuge für Status 6 gefunden. Durch die Behalten-Regel bleibt eventuell alles stehen.'
+        );
+
+        clearMarks();
+        return;
+      }
+
+      markRows(rows);
+    });
+
+    const btnStatus6 = document.createElement('a');
+
+    btnStatus6.id = UI.btnStatus6;
+    btnStatus6.className = 'btn btn-warning btn-xs';
+    btnStatus6.textContent = 'Fahrzeuge auf Status 6 setzen';
+
+    const btnSettings = document.createElement('a');
+
+    btnSettings.id = UI.btnSettings;
+    btnSettings.className = 'btn btn-default btn-xs';
+    btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+    btnSettings.target = '_blank';
+
+    const cog = document.createElement('span');
+
+    cog.className = 'glyphicon glyphicon-cog';
+    cog.title = 'Einstellungen';
+
+    btnSettings.appendChild(cog);
+
+    btnStatus6.addEventListener('click', async () => {
+
+      const cfg = await loadConfig();
+
+      if (!cfg.VEHICLE_TYPE_IDS.length) {
+        alert(
+          'Keine Fahrzeugtypen ausgewählt. Öffne die Einstellungen.'
+        );
+
+        return;
+      }
+
+      const rows = getRowsToSetStatus6(
+        cfg.VEHICLE_TYPE_IDS,
+        cfg.KEEP_PER_STATION
+      );
+
+      if (!rows.length) {
+        alert(
+          'Keine passenden Fahrzeuge für Status 6 gefunden. Durch die Behalten-Regel bleibt eventuell alles stehen.'
+        );
+
+        return;
+      }
+
+      if (!confirm(
+        `Sollen wirklich ${rows.length} Fahrzeuge auf Status 6 gesetzt werden?
+Behalten pro Wache: ${cfg.KEEP_PER_STATION}
+Delay: ${cfg.MIN_DELAY_MS}ms | Parallel: ${cfg.CONCURRENCY}`
+      )) return;
+
+      for (const b of [btnPrev, btnStatus6, btnSettings]) {
+        b.classList.add('disabled');
+        b.style.pointerEvents = 'none';
+      }
+
+      await setRowsStatus6(
+        rows,
+        cfg.MIN_DELAY_MS,
+        cfg.CONCURRENCY
+      );
+
+      for (const b of [btnPrev, btnStatus6, btnSettings]) {
+        b.classList.remove('disabled');
+        b.style.pointerEvents = '';
+      }
+    });
+
+    container.append(btnPrev, btnStatus6, btnSettings);
+
+    table.parentNode.insertBefore(container, table);
+  }
+
+  async function heartbeat() {
+    if (!inVehicleTab()) return;
+
+    await loadConfig();
+
+    ensureButtons();
+  }
+
+  setInterval(() => {
+    heartbeat().catch(() => {});
+  }, 750);
+
+  heartbeat().catch(() => {});
+})();
