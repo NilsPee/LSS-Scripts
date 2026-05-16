@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Leitstelle Autobuy Extensions
 // @namespace    http://tampermonkey.net/
-// @version      2.3.1
-// @description  Ausbauten automatisch kaufen – mit zentraler Einstellungsseite und benannten Mehrfach-Selects je Gebäudetyp
+// @version      2.4.0
+// @description  Ausbauten automatisch kaufen – Leitstellenlauf jetzt über API-Speicher statt Gebäudelisten-HTML
 // @author       Silberfighter & NilsPe
 // @match        https://www.leitstellenspiel.de/buildings/*
 // @match        https://www.leitstellenspiel.de/settings/index*
@@ -224,7 +224,7 @@
     ],
   };
 
-  // Generische Optionen für Typen, für die du noch nichts definiert hast
+  // Generische Optionen für Typen, für die noch nichts definiert ist
   const GENERIC_OPTIONS = Array.from({ length: 26 }, (_, i) => ({
     value: String(i),
     label: `Erweiterung ${i}`,
@@ -252,6 +252,31 @@
   //----------------------------------------------
   function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
+  function getCsrfToken() {
+    return document.querySelector('meta[name=csrf-token]')?.content || $('meta[name=csrf-token]').attr('content');
+  }
+
+  function toNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function getBuildingCaption(building) {
+    return building.caption || building.name || `Gebäude ${building.id}`;
+  }
+
+  function normalizeApiBuilding(building) {
+    return {
+      ...building,
+      id: Number(building.id),
+      name: getBuildingCaption(building),
+      type: Number(building.building_type),
+      building_type: Number(building.building_type),
+      leitstelle_building_id: building.leitstelle_building_id == null ? null : Number(building.leitstelle_building_id),
+      extensions: Array.isArray(building.extensions) ? building.extensions : []
+    };
+  }
+
   // ---------- Autobuy Extensions – Bottom Progress Bar ----------
   function ensureAbeStyles() {
     if (document.getElementById('abe-style')) return;
@@ -262,7 +287,7 @@
       body.abe-hasbar { padding-bottom: 40px !important; }
       #abe-wrap { display:flex; align-items:center; gap:12px; }
       #abe-state { min-width:240px; font-size:13px; }
-      #abe-progress { flex:1; height:12px; background:#eee; border-radius:4px; overflow:hidden; }
+      #abe-progress { flex:1; height:12px; background:#eee; border-radius:4px; overflow:hidden; display:flex; }
       #abe-bar-ok  { height:100%; background:#5cb85c; width:0%; }
       #abe-bar-err { height:100%; background:#d9534f; width:0%; }
     `;
@@ -318,8 +343,7 @@
 
   function parseStoredExtensions(raw) {
     if (!raw) return [];
-[];
-    // Versuch JSON-Array (wie im Fahrzeug-Script)
+    // Versuch JSON-Array
     try {
       const v = JSON.parse(raw);
       if (Array.isArray(v)) {
@@ -345,15 +369,11 @@
   async function getConfigForType(typeId) {
     const key = KEY_AUSBAUTEN_PREFIX + String(typeId);
     const raw = await GM_getValue(key, '[]');
-    let ausbauten = parseStoredExtensions(raw);
+    const ausbauten = parseStoredExtensions(raw);
 
     const def = findDefaultConfigForType(typeId);
 
-    if (!ausbauten.length && def && Array.isArray(def.ausbauten)) {
-      ausbauten = def.ausbauten.slice();
-    }
-
-    if (!def && !ausbauten.length) return null;
+    if (!ausbauten.length) return null;
 
     return {
       buildingID: Number(typeId),
@@ -364,10 +384,11 @@
     };
   }
 
+  //----------------------------------------------
   // SETTINGS-SEITE
+  //----------------------------------------------
   if (location.pathname.startsWith('/settings/index')) {
 
-    // 1) Select-Definition für addOptions (Optik)
     const typeSelects = BUILDING_TYPES.map(t => {
       const baseOpts = EXT_OPTIONS_BY_TYPE[t.id] || GENERIC_OPTIONS;
 
@@ -417,19 +438,16 @@
           default: DEFAULT_DELAY_AFTER_FETCH,
           min: 0,
           max: 5000,
-          label: 'Delay nach Seitenabruf [ms] (Leitstelle)'
+          label: 'Delay nach Seitenabruf [ms] (nur Fallback/Spezialisierungen/Lager)'
         }
       ]
     });
 
-    // 2) Nach dem Aufbau: Werte selbst laden und speichern
     const panel = document.getElementById(SETTINGS_IDENTIFIER);
     if (!panel) return;
 
     async function initSelectForType(typeId) {
       const key = KEY_AUSBAUTEN_PREFIX + String(typeId);
-
-      // passenden <select multiple> über Label finden
       const labelTextStart = `${typeId} `;
       const formGroups = panel.querySelectorAll('.form-group, .setting, div');
 
@@ -444,7 +462,6 @@
       }
       if (!select) return;
 
-      // gespeicherte Werte holen
       const raw = await GM_getValue(key, '[]');
       const selectedIds = parseStoredExtensions(raw);
 
@@ -453,11 +470,9 @@
           const v = parseInt(opt.value, 10);
           opt.selected = selectedIds.includes(v);
         }
-        // Multiselect-UI updaten
         select.dispatchEvent(new Event('change'));
       }
 
-      // beim Ändern speichern (als JSON-Array)
       select.addEventListener('change', async () => {
         const vals = Array.from(select.selectedOptions)
           .map(o => parseInt(o.value, 10))
@@ -474,67 +489,128 @@
   }
 
   //----------------------------------------------
-  // GEBÄUDE LADEN (HTML)
+  // GEBÄUDE LADEN ÜBER API-SPEICHER / INDEXEDDB
   //----------------------------------------------
-  async function getBuildingsOfLeitstelle(leitstellenId, DELAY_AFTER_FETCH) {
-    let out = [];
-    try {
-      const res = await fetch(`/buildings/${leitstellenId}/leitstelle-buildings`);
-      const html = await res.text();
-      const doc = new DOMParser().parseFromString(html, "text/html");
-      const links = Array.from(doc.querySelectorAll("a[href^='/buildings/']"));
-      const seen = new Set();
-      out = links.map(a => {
-        const id = a.getAttribute("href").split("/buildings/")[1].split("/")[0];
-        const name = a.innerText.trim();
-        return { id, name, type: null };
-      }).filter(b => /^\d+$/.test(b.id))
-        .filter(b => (seen.has(b.id) ? false : (seen.add(b.id), true)));
-    } catch {}
-
-    for (const b of out) {
-      try {
-        const page = await fetch(`/buildings/${b.id}`);
-        const html = await page.text();
-        const doc = new DOMParser().parseFromString(html, "text/html");
-        const h1 = doc.querySelector("h1[building_type]");
-        if (h1) b.type = h1.getAttribute("building_type");
-        const h1Text = doc.querySelector("h1")?.textContent?.trim();
-        if (h1Text) b.name = h1Text;
-        await delay(DELAY_AFTER_FETCH);
-      } catch {}
+  async function loadApiBuildingsFromCache(maxAgeSeconds = 60) {
+    if (typeof openDb !== 'function' || typeof updateBuildings !== 'function') {
+      throw new Error('API-Speicher ist nicht verfügbar.');
     }
-    return out;
+
+    const db = await openDb();
+    await updateBuildings(db, maxAgeSeconds);
+
+    // Robuster Loader: Die API-Speicher-Library ist nicht überall gleich exportiert.
+    // Deshalb werden alle bekannten Varianten einzeln versucht, ohne den Leitstellenlauf direkt abzubrechen.
+    const tryLoaders = [
+      async () => {
+        if (typeof getDataByIndex !== 'function') return null;
+        return await getDataByIndex(db, 'buildings', 'building_type', IDBKeyRange.bound(0, 999));
+      },
+      async () => {
+        if (typeof getDataByIndex !== 'function') return null;
+        return await getDataByIndex(db, 'buildings', 'building_type', IDBKeyRange.lowerBound(0));
+      },
+      async () => {
+        if (typeof getAllData !== 'function') return null;
+        return await getAllData(db, 'buildings');
+      },
+      async () => {
+        if (typeof getData !== 'function') return null;
+        return await getData(db, 'buildings');
+      },
+      async () => {
+        return await new Promise((resolve, reject) => {
+          const transaction = db.transaction('buildings', 'readonly');
+          const store = transaction.objectStore('buildings');
+          const request = store.getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error || new Error('Gebäude konnten nicht aus IndexedDB geladen werden.'));
+        });
+      }
+    ];
+
+    let lastError = null;
+
+    for (const loader of tryLoaders) {
+      try {
+        const data = await loader();
+        if (Array.isArray(data)) {
+          console.log('[Autobuy Extensions] Gebäude aus API-Speicher geladen:', data.length);
+          return data.map(normalizeApiBuilding);
+        }
+      } catch (e) {
+        lastError = e;
+        console.warn('[Autobuy Extensions] Gebäude-Loader fehlgeschlagen, versuche nächsten Loader:', e);
+      }
+    }
+
+    throw lastError || new Error('Keine Gebäude aus API-Speicher geladen.');
+  }
+
+  async function getBuildingsOfLeitstelle(leitstellenId) {
+    const targetId = Number(leitstellenId);
+    const allBuildings = await loadApiBuildingsFromCache(60);
+
+    return allBuildings
+      .filter(b => b.leitstelle_building_id === targetId)
+      .filter(b => !buildingsIDToIgnore.includes(Number(b.building_type)))
+      .sort((a, b) => a.id - b.id);
+  }
+
+  async function getApiBuildingById(buildingId) {
+    const id = Number(buildingId);
+    const allBuildings = await loadApiBuildingsFromCache(60);
+    return allBuildings.find(b => Number(b.id) === id) || null;
   }
 
   //----------------------------------------------
   // VERFÜGBARE AUSBAUTEN / SPEZ / LAGER
   //----------------------------------------------
-  async function getAvailableExtensions(buildingId) {
-    const res = await fetch(`/buildings/${buildingId}`);
+  function extensionIdFromApiExtension(ext) {
+    const candidates = [ext.type_id, ext.type, ext.id, ext.extension_id];
+    for (const c of candidates) {
+      const n = toNumber(c);
+      if (n !== null) return n;
+    }
+    return null;
+  }
+
+  function getAvailableExtensionsFromApiBuilding(building) {
+    const apiExtensions = Array.isArray(building?.extensions) ? building.extensions : [];
+
+    return apiExtensions
+      .map(ext => ({ ...ext, abe_type_id: extensionIdFromApiExtension(ext) }))
+      .filter(ext => ext.abe_type_id !== null)
+      .filter(ext => ext.available !== false)
+      .filter(ext => ext.enabled !== true)
+      .map(ext => ext.abe_type_id);
+  }
+
+  async function getAvailableExtensionsFromHtml(buildingId) {
+    const res = await fetch(`/buildings/${buildingId}`, { credentials: 'same-origin' });
     const html = await res.text();
-    const doc = new DOMParser().parseFromString(html, "text/html");
+    const doc = new DOMParser().parseFromString(html, 'text/html');
 
     const extensions = Array.from(doc.querySelectorAll(`a[href*="/extension/credits/"]`))
       .map(a => {
-        const match = a.getAttribute("href").match(/credits\/(\d+)\?/);
+        const match = a.getAttribute('href')?.match(/credits\/(\d+)\?/);
         return match ? parseInt(match[1], 10) : null;
       })
       .filter(id => id !== null);
 
     const specs = Array.from(doc.querySelectorAll(`a[href*="/building_specializations"]`))
       .map(a => {
-        if (a.href.includes("factory_fire_brigade")) return "factory_fire_brigade";
-        if (a.href.includes("airport"))             return "airport";
-        if (a.href.includes("water_rescue"))        return "water_rescue";
+        if (a.href.includes('factory_fire_brigade')) return 'factory_fire_brigade';
+        if (a.href.includes('airport'))             return 'airport';
+        if (a.href.includes('water_rescue'))        return 'water_rescue';
         return null;
       })
       .filter(x => x);
 
     const storages = Array.from(doc.querySelectorAll(`a[href*="/storage_upgrade/credits/"]`))
       .map(a => {
-        const href = a.getAttribute("href");
-        if (href.includes("initial_containers")) return "initial_containers";
+        const href = a.getAttribute('href') || '';
+        if (href.includes('initial_containers')) return 'initial_containers';
         const m = href.match(/additional_containers_(\d+)/);
         return m ? `additional_containers_${m[1]}` : null;
       })
@@ -543,73 +619,154 @@
     return { extensions, specs, storages };
   }
 
-  async function extendBuilding(buildingId, config, DELAY_PER_ACTION) {
-    if (!config) return;
+  async function getAvailableActions(buildingId, apiBuilding, needsHtmlFallback) {
+    const extensionsFromApi = getAvailableExtensionsFromApiBuilding(apiBuilding);
 
-    // AUSBAUTEN
-    if (config.ausbauten && config.ausbauten.length) {
-      for (const a of config.ausbauten) {
-        let available = await getAvailableExtensions(buildingId);
-
-        if (available.extensions.includes(a)) {
-          await $.post(`/buildings/${buildingId}/extension/credits/${a}?redirect_building_id=${buildingId}`, {
-            "_method": "post",
-            "authenticity_token": $("meta[name=csrf-token]").attr("content")
-          });
-          await delay(DELAY_PER_ACTION);
-          available = await getAvailableExtensions(buildingId);
-        }
-      }
+    // Für normale Ausbauten reicht API. HTML wird nur noch benötigt, wenn:
+    // - keine API-Erweiterungen vorhanden sind
+    // - Spezialisierungen oder Lager konfiguriert sind
+    if (!needsHtmlFallback && extensionsFromApi.length > 0) {
+      return { extensions: extensionsFromApi, specs: [], storages: [] };
     }
 
-    // SPEZIALISIERUNG (falls in Defaults genutzt)
-    if (config.spezialisierung && config.spezialisierung.length) {
-      for (const s of config.spezialisierung) {
-        let type = "";
-        if (s == 0 || s === "factory_fire_brigade") type = "factory_fire_brigade";
-        if (s == 1 || s === "airport")               type = "airport";
-        if (s == 2 || s === "water_rescue")          type = "water_rescue";
-        if (!type) continue;
-
-        const availNow = await getAvailableExtensions(buildingId);
-        if (!availNow.specs.includes(type)) continue;
-
-        await $.post(`/building_specializations?building_id=${buildingId}&pay_with=credits&type=${type}`, {
-          "_method": "post",
-          "authenticity_token": $("meta[name=csrf-token]").attr("content")
-        });
-        await delay(DELAY_PER_ACTION);
-      }
+    if (!needsHtmlFallback && Array.isArray(apiBuilding?.extensions)) {
+      return { extensions: extensionsFromApi, specs: [], storages: [] };
     }
 
-    // LAGER (falls genutzt)
-    if (config.lager && config.lager.length) {
-      for (const l of config.lager) {
-        const storage_name =
-          (l == 0 || l === "initial_containers") ? "initial_containers" :
-          (typeof l === "string" && l.startsWith("additional_containers_"))
-            ? l
-            : `additional_containers_${l}`;
+    const htmlAvailable = await getAvailableExtensionsFromHtml(buildingId);
+    return {
+      extensions: extensionsFromApi.length ? extensionsFromApi : htmlAvailable.extensions,
+      specs: htmlAvailable.specs,
+      storages: htmlAvailable.storages
+    };
+  }
 
-        const availNow = await getAvailableExtensions(buildingId);
-        if (!availNow.storages.includes(storage_name)) continue;
+  async function buyExtension(buildingId, extensionId) {
+    const token = getCsrfToken();
+    const response = await fetch(`/buildings/${buildingId}/extension/credits/${extensionId}?redirect_building_id=${buildingId}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-CSRF-Token': token,
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: new URLSearchParams({
+        _method: 'post',
+        authenticity_token: token
+      }),
+      redirect: 'manual'
+    });
 
-        await $.post(`/buildings/${buildingId}/storage_upgrade/credits/${storage_name}?redirect_building_id=${buildingId}`, {
-          "_method": "post",
-          "authenticity_token": $("meta[name=csrf-token]").attr("content")
-        });
-        await delay(DELAY_PER_ACTION);
-      }
+    if (response.status >= 400) {
+      throw new Error(`Ausbau ${extensionId} konnte bei Gebäude ${buildingId} nicht gekauft werden. Status: ${response.status}`);
     }
   }
 
-  async function autobuyExtensionsForLeitstelle(leitstellenId, DELAY_PER_ACTION, DELAY_PER_BUILDING, DELAY_AFTER_FETCH) {
-    abeSetState('Lade Gebäudeliste…', 'info');
+  async function buySpecialization(buildingId, type) {
+    const token = getCsrfToken();
+    const response = await fetch(`/building_specializations?building_id=${buildingId}&pay_with=credits&type=${type}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-CSRF-Token': token,
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: new URLSearchParams({
+        _method: 'post',
+        authenticity_token: token
+      }),
+      redirect: 'manual'
+    });
 
-    const buildings = await getBuildingsOfLeitstelle(leitstellenId, DELAY_AFTER_FETCH);
+    if (response.status >= 400) {
+      throw new Error(`Spezialisierung ${type} konnte bei Gebäude ${buildingId} nicht gekauft werden. Status: ${response.status}`);
+    }
+  }
+
+  async function buyStorage(buildingId, storageName) {
+    const token = getCsrfToken();
+    const response = await fetch(`/buildings/${buildingId}/storage_upgrade/credits/${storageName}?redirect_building_id=${buildingId}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-CSRF-Token': token,
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: new URLSearchParams({
+        _method: 'post',
+        authenticity_token: token
+      }),
+      redirect: 'manual'
+    });
+
+    if (response.status >= 400) {
+      throw new Error(`Lager ${storageName} konnte bei Gebäude ${buildingId} nicht gekauft werden. Status: ${response.status}`);
+    }
+  }
+
+  function markExtensionAsBought(apiBuilding, extensionId) {
+    if (!apiBuilding || !Array.isArray(apiBuilding.extensions)) return;
+    const ext = apiBuilding.extensions.find(e => extensionIdFromApiExtension(e) === Number(extensionId));
+    if (!ext) return;
+    ext.enabled = true;
+    ext.available = false;
+  }
+
+  async function extendBuilding(buildingId, config, DELAY_PER_ACTION, apiBuilding = null) {
+    if (!config) return;
+
+    const needsHtmlFallback = Boolean(
+      (config.spezialisierung && config.spezialisierung.length) ||
+      (config.lager && config.lager.length)
+    );
+
+    const available = await getAvailableActions(buildingId, apiBuilding, needsHtmlFallback);
+
+    for (const a of config.ausbauten || []) {
+      const extId = Number(a);
+      if (!available.extensions.includes(extId)) continue;
+
+      await buyExtension(buildingId, extId);
+      markExtensionAsBought(apiBuilding, extId);
+      await delay(DELAY_PER_ACTION);
+    }
+
+    for (const s of config.spezialisierung || []) {
+      let type = '';
+      if (s == 0 || s === 'factory_fire_brigade') type = 'factory_fire_brigade';
+      if (s == 1 || s === 'airport')             type = 'airport';
+      if (s == 2 || s === 'water_rescue')        type = 'water_rescue';
+      if (!type || !available.specs.includes(type)) continue;
+
+      await buySpecialization(buildingId, type);
+      await delay(DELAY_PER_ACTION);
+    }
+
+    for (const l of config.lager || []) {
+      const storageName =
+        (l == 0 || l === 'initial_containers') ? 'initial_containers' :
+        (typeof l === 'string' && l.startsWith('additional_containers_'))
+          ? l
+          : `additional_containers_${l}`;
+
+      if (!available.storages.includes(storageName)) continue;
+
+      await buyStorage(buildingId, storageName);
+      await delay(DELAY_PER_ACTION);
+    }
+  }
+
+  async function autobuyExtensionsForLeitstelle(leitstellenId, DELAY_PER_ACTION, DELAY_PER_BUILDING) {
+    abeSetState('Lade Gebäude über API-Speicher…', 'info');
+
+    const buildings = await getBuildingsOfLeitstelle(leitstellenId);
     const total = buildings.length;
 
-    let ok = 0, err = 0;
+    let ok = 0;
+    let err = 0;
 
     for (const b of buildings) {
       const config = b.type ? await getConfigForType(Number(b.type)) : null;
@@ -630,9 +787,10 @@
       }
 
       try {
-        await extendBuilding(b.id, config, DELAY_PER_ACTION);
+        await extendBuilding(b.id, config, DELAY_PER_ACTION, b);
         ok++;
-      } catch {
+      } catch (e) {
+        console.error('[Autobuy Extensions] Fehler bei Gebäude', b.id, b.name, e);
         err++;
       }
 
@@ -640,79 +798,117 @@
       await delay(DELAY_PER_BUILDING);
     }
 
-    abeSetState('Autobuy Extensions abgeschlossen', 'success');
+    abeSetState('Autobuy Extensions abgeschlossen', err ? 'warning' : 'success');
     setTimeout(abeDestroyNavbar, 1500);
   }
 
   //----------------------------------------------
   // HAUPTLOGIK (Gebäudeseiten)
   //----------------------------------------------
-  const titleDiv = Array.from(document.getElementsByTagName("h1"))
-    .find(e => e.getAttribute("building_type") != null);
+  const titleDiv = Array.from(document.getElementsByTagName('h1'))
+    .find(e => e.getAttribute('building_type') != null);
   if (!titleDiv) return;
 
-  const buildingTypeID = Number(titleDiv.getAttribute("building_type"));
-  const buildingId = window.location.href.replace("https://www.leitstellenspiel.de/buildings/", "");
+  const buildingTypeID = Number(titleDiv.getAttribute('building_type'));
+  const buildingId = Number(window.location.pathname.split('/').filter(Boolean).pop());
 
-  const { DELAY_PER_ACTION, DELAY_PER_BUILDING, DELAY_AFTER_FETCH } = await getConfiguredDelays();
+  const { DELAY_PER_ACTION, DELAY_PER_BUILDING } = await getConfiguredDelays();
 
   // Leitstelle
   if (buildingTypeID === 7) {
-    const wrapperDIV = document.createElement("div");
-    wrapperDIV.style.padding = "5px 0";
-    titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
+    function addAutobuyButtonToBuildingDetails() {
+      const buildingDetailsElement = document.querySelector('.building-title ~ dl.dl-horizontal');
+      if (!buildingDetailsElement) return;
 
-    const btn = document.createElement("a");
-    btn.className = "btn btn-success btn-xs";
-    btn.innerText = "Autobuy Extensions";
-    wrapperDIV.appendChild(btn);
+      if (document.getElementById('abe-building-details-buttons')) return;
 
-    const btnSettings = document.createElement("a");
-    btnSettings.className = "btn btn-default btn-xs";
-    btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
-    btnSettings.target = '_blank';
-    const cog = document.createElement('span');
-    cog.className = 'glyphicon glyphicon-cog';
-    cog.title = 'Einstellungen';
-    btnSettings.appendChild(cog);
-    wrapperDIV.appendChild(btnSettings);
+      const dtElement = document.createElement('dt');
+      const dtTextElement = document.createElement('strong');
+      dtTextElement.innerText = 'Erweiterungen kaufen:';
+      dtElement.appendChild(dtTextElement);
 
-    btn.addEventListener("click", async function () {
-      abeCreateNavbar();
-      abeSetState('Starte Autobuy…', 'info');
-      abeUpdateProgress(0, 0, 1);
-      await autobuyExtensionsForLeitstelle(buildingId, DELAY_PER_ACTION, DELAY_PER_BUILDING, DELAY_AFTER_FETCH);
-    });
+      const buttonGroup = document.createElement('div');
+      buttonGroup.id = 'abe-building-details-buttons';
+      buttonGroup.className = 'btn-group';
 
+      const btn = document.createElement('a');
+      btn.href = '';
+      btn.className = 'btn btn-default btn-xs';
+      btn.innerText = 'Autobuy Extensions';
+
+      const btnSettings = document.createElement('a');
+      btnSettings.className = 'btn btn-default btn-xs';
+      btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+      btnSettings.target = '_blank';
+
+      const cog = document.createElement('span');
+      cog.className = 'glyphicon glyphicon-cog';
+      cog.title = 'Einstellungen';
+      btnSettings.appendChild(cog);
+
+      btn.addEventListener('click', async function (event) {
+        event.preventDefault();
+
+        if (btn.classList.contains('disabled')) return;
+        btn.classList.add('disabled');
+
+        abeCreateNavbar();
+        abeSetState('Starte Autobuy…', 'info');
+        abeUpdateProgress(0, 0, 1);
+
+        try {
+          await autobuyExtensionsForLeitstelle(
+            buildingId,
+            DELAY_PER_ACTION,
+            DELAY_PER_BUILDING
+          );
+        } catch (e) {
+          console.error('[Autobuy Extensions] Leitstellenlauf fehlgeschlagen', e);
+          abeSetState('Fehler beim Leitstellenlauf', 'danger');
+        }
+
+        btn.classList.remove('disabled');
+      });
+
+      buttonGroup.append(btn, btnSettings);
+
+      const ddElement = document.createElement('dd');
+      ddElement.appendChild(buttonGroup);
+
+      buildingDetailsElement.appendChild(dtElement);
+      buildingDetailsElement.appendChild(ddElement);
+    }
+
+    addAutobuyButtonToBuildingDetails();
     return;
   }
 
   // Einzelgebäude
   if (buildingsIDToIgnore.indexOf(buildingTypeID) >= 0) return;
 
-  const wrapperDIV = document.createElement("div");
-  wrapperDIV.innerText = "Autobuy Extensions:";
-  wrapperDIV.style.padding = "15px 5px 15px 5px";
+  const wrapperDIV = document.createElement('div');
+  wrapperDIV.innerText = 'Autobuy Extensions:';
+  wrapperDIV.style.padding = '15px 5px 15px 5px';
   titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
 
-  const btn = document.createElement("a");
-  btn.className = "btn btn-success btn-xs";
-  btn.innerText = "Autobuy (laut Einstellungen)";
-  btn.style.margin = "5px";
+  const btn = document.createElement('a');
+  btn.className = 'btn btn-success btn-xs';
+  btn.innerText = 'Autobuy (laut Einstellungen)';
+  btn.style.margin = '5px';
   wrapperDIV.appendChild(btn);
 
-  const btnSettings = document.createElement("a");
-  btnSettings.className = "btn btn-default btn-xs";
+  const btnSettings = document.createElement('a');
+  btnSettings.className = 'btn btn-default btn-xs';
   btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
   btnSettings.target = '_blank';
-  btnSettings.style.margin = "5px";
+  btnSettings.style.margin = '5px';
   const cog2 = document.createElement('span');
   cog2.className = 'glyphicon glyphicon-cog';
   cog2.title = 'Einstellungen';
   btnSettings.appendChild(cog2);
   wrapperDIV.appendChild(btnSettings);
 
-  btn.addEventListener("click", async function () {
+  btn.addEventListener('click', async function () {
     const config = await getConfigForType(buildingTypeID);
     if (!config || (
       !(config.ausbauten && config.ausbauten.length) &&
@@ -728,10 +924,12 @@
     abeUpdateProgress(0, 0, 1);
 
     try {
-      await extendBuilding(buildingId, config, DELAY_PER_ACTION);
+      const apiBuilding = await getApiBuildingById(buildingId).catch(() => null);
+      await extendBuilding(buildingId, config, DELAY_PER_ACTION, apiBuilding);
       abeUpdateProgress(1, 0, 1);
       abeSetState('Fertig', 'success');
-    } catch {
+    } catch (e) {
+      console.error('[Autobuy Extensions] Fehler beim Einzelgebäude', buildingId, e);
       abeUpdateProgress(0, 1, 1);
       abeSetState('Fehler', 'danger');
     }
