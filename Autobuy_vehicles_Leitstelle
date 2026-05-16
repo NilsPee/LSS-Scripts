@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Leitstelle Autobuy Vehicles
-// @namespace    NilsPe.autobuy.vehicles.hybrid
-// @version      5.1.0
-// @description  Fahrzeuge automatisch kaufen – mit zentraler Settingssseite je Gebäudetyp und separaten Eingabefeldern pro Fahrzeugtyp und Fortschrittsbalken
+// @namespace    NilsPe.autobuy.vehicles.api
+// @version      5.3.0
+// @description  Fahrzeuge automatisch kaufen – Leitstellen-Gebäude über API-Speicher, Button im Gebäudedetail-Bereich
 // @author       Silberfighter & NilsPe
 // @match        https://*.leitstellenspiel.de/buildings/*
 // @match        https://*.leitstellenspiel.de/settings/index*
@@ -10,6 +10,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @require      https://update.greasyfork.org/scripts/528065/Skripteinstellungen.user.js
+// @require      https://update.greasyfork.org/scripts/516844/API-Speicher.user.js
 // ==/UserScript==
 
 (async function () {
@@ -20,7 +21,7 @@
   //----------------------------------------------
   const DEFAULT_DELAY_PER_VEHICLE  = 100;
   const DEFAULT_DELAY_PER_BUILDING = 100;
-  const DEFAULT_DELAY_AFTER_FETCH  = 100;
+  const DEFAULT_DELAY_AFTER_FETCH  = 0;
 
   const KEY_DELAY_PER_VEHICLE  = 'abv_delay_per_vehicle';
   const KEY_DELAY_PER_BUILDING = 'abv_delay_per_building';
@@ -30,7 +31,9 @@
   const KEY_VEHICLES_PREFIX = 'abv_vehicles_type_';
   const RUN_FLAG = 'abv_run_flag';
 
-  // Gebäudetypen, für die wir eine Reihe von Feldern anzeigen wollen
+  //----------------------------------------------
+  // GEBÄUDETYPEN
+  //----------------------------------------------
   const BUILDING_TYPES = [
     { id: 0,  label: 'Feuerwache' },
     { id: 2,  label: 'Rettungswache' },
@@ -38,16 +41,17 @@
     { id: 9,  label: 'THW-Ortsverband' },
     { id: 11, label: 'Bereitschaftspolizei' },
     { id: 12, label: 'SEG-Wache' },
+    { id: 13, label: 'Polizeihubschrauber' },
     { id: 15, label: 'Wasserrettung' },
   ];
 
   //----------------------------------------------
-  // DEFAULT-FAHRZEUG-KONFIGURATIONEN (Fallback)
+  // DEFAULT-FAHRZEUG-KONFIGURATIONEN
   //----------------------------------------------
   const DEFAULT_VEHICLE_CONFIGS = [
     {
       buildingID: 11,
-      displayName: "Bereitschaftspolizei",
+      displayName: 'Bereitschaftspolizei',
       vehicles: [
         [50, 9],  // GruKw
         [35, 3],  // leBefKw
@@ -59,7 +63,7 @@
     },
     {
       buildingID: 0,
-      displayName: "Feuerwache",
+      displayName: 'Feuerwache',
       vehicles: [
         [30, 6], // HLF20
         [2,  2], // DLK23
@@ -76,7 +80,7 @@
     },
     {
       buildingID: 2,
-      displayName: "Rettungswache",
+      displayName: 'Rettungswache',
       vehicles: [
         [28, 8], // RTW
         [29, 4], // NEF
@@ -87,16 +91,23 @@
     },
     {
       buildingID: 6,
-      displayName: "Polizeiwache",
+      displayName: 'Polizeiwache',
       vehicles: [
-         [32,10], // FuStw
-         [103,1], // FuStw (DGL)
-         [98,1],  // Zivil
+         [32, 10], // FuStw
+         [103, 1], // FuStw (DGL)
+         [98,  1], // Zivil
+      ]
+    },
+    {
+      buildingID: 13,
+      displayName: 'Polizeihubschrauber',
+      vehicles: [
+         [61, 1],
       ]
     },
     {
       buildingID: 15,
-      displayName: "Wasserrettung",
+      displayName: 'Wasserrettung',
       vehicles: [
         [63, 2], // GW-Taucher
         [64, 2], // GW-Wasser
@@ -105,7 +116,7 @@
     },
     {
       buildingID: 12,
-      displayName: "SEG-Wache",
+      displayName: 'SEG-Wache',
       vehicles: [
         [171, 2], // GW TeSi
         [173, 2], // MTW TeSi
@@ -114,7 +125,7 @@
     },
     {
       buildingID: 9,
-      displayName: "THW-Ortsverband",
+      displayName: 'THW-Ortsverband',
       vehicles: [
         [39,  2], // GKW
         [40,  2], // MTW-TZ
@@ -133,65 +144,196 @@
     },
   ];
 
-  // Eingabefelder für verschiedene Fahrzeuge
+  //----------------------------------------------
+  // EINSTELLUNGSFELDER
+  //----------------------------------------------
   const VEHICLE_FIELDS_BY_TYPE = {
     0: [
-      { id: 30, label: 'HLF20' },
-      { id: 2,  label: 'DLK23' },
-      { id: 14, label: 'SW2000' },
-      { id: 5,  label: 'GW-A' },
-      { id: 27, label: 'GW-G' },
-      { id: 12, label: 'GW-Mess' },
-      { id: 33, label: 'GW-Höhe' },
+      { id: 0, label: 'LF 20' },
+      { id: 1, label: 'LF 10' },
+      { id: 2, label: 'DLK 23' },
+      { id: 3, label: 'ELW 1' },
+      { id: 4, label: 'RW' },
+      { id: 5, label: 'GW-A' },
+      { id: 6, label: 'LF 8/6' },
+      { id: 7, label: 'LF 20/16' },
+      { id: 8, label: 'LF 10/6' },
+      { id: 9, label: 'LF 16-TS' },
       { id: 10, label: 'GW-Öl' },
-      { id: 53, label: 'DekonP' },
-      { id: 34, label: 'ELW2' },
+      { id: 11, label: 'GW-L2-Wasser' },
+      { id: 12, label: 'GW-Messtechnik' },
+      { id: 13, label: 'SW 1000' },
+      { id: 14, label: 'SW 2000' },
+      { id: 15, label: 'SW 2000-Tr' },
+      { id: 16, label: 'SW Kats' },
+      { id: 17, label: 'TLF 2000' },
+      { id: 18, label: 'TLF 3000' },
+      { id: 19, label: 'TLF 8/8' },
+      { id: 20, label: 'TLF 8/18' },
+      { id: 21, label: 'TLF 16/24-Tr' },
+      { id: 22, label: 'TLF 16/25' },
+      { id: 23, label: 'TLF 16/45' },
+      { id: 24, label: 'TLF 20/40' },
+      { id: 25, label: 'TLF 20/40-SL' },
+      { id: 26, label: 'TLF 16' },
+      { id: 27, label: 'GW-Gefahrgut' },
+      { id: 30, label: 'HLF 20' },
+      { id: 33, label: 'GW-Höhenrettung' },
+      { id: 34, label: 'ELW 2' },
+      { id: 36, label: 'MTW' },
+      { id: 37, label: 'TSF-W' },
+      { id: 46, label: 'WLF' },
+      { id: 47, label: 'AB-Rüst' },
+      { id: 48, label: 'AB-Atemschutz' },
+      { id: 49, label: 'AB-Öl' },
+      { id: 53, label: 'Dekon-P' },
+      { id: 54, label: 'AB-Dekon-P' },
       { id: 57, label: 'FwK' },
+      { id: 62, label: 'AB-Schlauch' },
+      { id: 63, label: 'GW-Taucher' },
+      { id: 64, label: 'GW-Wasserrettung' },
+      { id: 70, label: 'MZB' },
+      { id: 71, label: 'AB-MZB' },
+      { id: 73, label: 'GRTW' },
+      { id: 75, label: 'FLF' },
+      { id: 76, label: 'Rettungstreppe' },
+      { id: 77, label: 'AB-Gefahrgut' },
+      { id: 78, label: 'AB-Einsatzleitung' },
+      { id: 83, label: 'GW-Werkfeuerwehr' },
+      { id: 84, label: 'ULF mit Löscharm' },
+      { id: 85, label: 'TM 50' },
+      { id: 86, label: 'Turbolöscher' },
+      { id: 87, label: 'TLF 4000' },
+      { id: 88, label: 'KLF' },
+      { id: 89, label: 'MLF' },
+      { id: 90, label: 'HLF 10' },
+      { id: 104, label: 'GW-L1' },
+      { id: 105, label: 'GW-L2' },
+      { id: 106, label: 'MTF-L' },
+      { id: 107, label: 'LF-L' },
+      { id: 108, label: 'AB-L' },
+      { id: 111, label: 'NEA50 (FW)' },
+      { id: 113, label: 'NEA200 (FW)' },
+      { id: 114, label: 'GW-Lüfter' },
+      { id: 115, label: 'Anh Lüfter' },
+      { id: 116, label: 'AB-Lüfter' },
+      { id: 117, label: 'AB-Tank' },
+      { id: 118, label: 'Kleintankwagen' },
+      { id: 119, label: 'AB-Lösch' },
+      { id: 120, label: 'Tankwagen' },
+      { id: 121, label: 'GTLF' },
+      { id: 126, label: 'MTF Drohne' },
+      { id: 128, label: 'ELW 1 Drohne' },
+      { id: 129, label: 'ELW 2 Drohne' },
+      { id: 138, label: 'GW-Verpflegung' },
+      { id: 139, label: 'GW-Küche' },
+      { id: 140, label: 'MTW-Verpflegung' },
+      { id: 141, label: 'FKH' },
+      { id: 142, label: 'AB-Küche' },
+      { id: 143, label: 'Anh Schlauch' },
+      { id: 162, label: 'RW Schiene' },
+      { id: 163, label: 'HLF Schiene' },
+      { id: 164, label: 'AB Schiene' },
+      { id: 166, label: 'PTLF 4000' },
+      { id: 167, label: 'SLF' },
+      { id: 168, label: 'Anh Sonderlöschmittel' },
+      { id: 169, label: 'AB-Sonderlöschmittel' },
+      { id: 170, label: 'AB-Wasser/Schaum' },
     ],
     2: [
       { id: 28, label: 'RTW' },
       { id: 29, label: 'NEF' },
+      { id: 38, label: 'KTW' },
+      { id: 55, label: 'KdoW-LNA' },
+      { id: 56, label: 'KdoW-OrgL' },
+      { id: 73, label: 'GRTW' },
       { id: 74, label: 'NAW' },
-      { id: 55, label: 'LNA' },
-      { id: 56, label: 'OrgL' },
+      { id: 97, label: 'ITW' },
     ],
     6: [
-      { id: 32,  label: 'FuStw' },
-      { id: 103, label: 'FuStw (DGL)' },
-      { id: 98,  label: 'Zivil' },
+      { id: 32, label: 'FuStW' },
+      { id: 52, label: 'GefKw' },
+      { id: 94, label: 'DhuFüKw' },
+      { id: 95, label: 'Polizeimotorrad' },
+      { id: 98, label: 'Zivilstreifenwagen' },
+      { id: 103, label: 'FuStW (DGL)' },
     ],
     9: [
-      { id: 39,  label: 'GKW' },
-      { id: 40,  label: 'MTW-TZ' },
-      { id: 41,  label: 'MzGW(N)' },
-      { id: 42,  label: 'LKW K9' },
-      { id: 123, label: 'LKW 7 Lbw' },
+      { id: 39, label: 'GKW' },
+      { id: 40, label: 'MTW-TZ' },
+      { id: 41, label: 'MzGW (FGr N)' },
+      { id: 42, label: 'LKW K 9' },
+      { id: 43, label: 'BrmG R' },
+      { id: 44, label: 'Anh DLE' },
+      { id: 45, label: 'MLW 5' },
+      { id: 65, label: 'LKW 7 Lkr 19 tm' },
+      { id: 66, label: 'Anh MzB' },
+      { id: 67, label: 'Anh SchlB' },
+      { id: 68, label: 'Anh MzAB' },
+      { id: 69, label: 'Tauchkraftwagen' },
+      { id: 92, label: 'Anh Hund' },
+      { id: 93, label: 'MTW-O' },
       { id: 100, label: 'MLW 4' },
-      { id: 45,  label: 'MLW 5' },
-      { id: 43,  label: 'BrmG R' },
-      { id: 44,  label: 'Anh DLE' },
       { id: 101, label: 'Anh SwPu' },
       { id: 102, label: 'Anh 7' },
-      { id: 110, label: 'NEA50' },
-      { id: 109, label: 'MzGw SB' },
+      { id: 109, label: 'MzGW SB' },
+      { id: 110, label: 'NEA50 (THW)' },
+      { id: 112, label: 'NEA200 (THW)' },
+      { id: 122, label: 'LKW 7 Lbw (FGr E)' },
+      { id: 123, label: 'LKW 7 Lbw (FGr WP)' },
+      { id: 124, label: 'MTW-OV' },
+      { id: 125, label: 'MTW-TR UL (Drohne)' },
+      { id: 144, label: 'FüKW (THW)' },
+      { id: 145, label: 'FüKomKW' },
+      { id: 146, label: 'Anh FüLa' },
+      { id: 147, label: 'FmKW' },
+      { id: 148, label: 'MTW-FGr K' },
     ],
     11: [
-      { id: 50, label: 'GruKw' },
       { id: 35, label: 'leBefKw' },
-      { id: 51, label: 'FüKW' },
+      { id: 50, label: 'GruKw' },
+      { id: 51, label: 'FüKw' },
       { id: 52, label: 'GefKw' },
-      { id: 72, label: 'WaWe' },
+      { id: 72, label: 'WaWe 10' },
+      { id: 79, label: 'SEK – ZF' },
+      { id: 80, label: 'SEK – MTF' },
+      { id: 81, label: 'MEK – ZF' },
+      { id: 82, label: 'MEK – MTF' },
       { id: 94, label: 'DhuFüKw' },
+      { id: 134, label: 'Pferdetransporter klein' },
+      { id: 135, label: 'Pferdetransporter groß' },
+      { id: 136, label: 'Anh Pferdetransport' },
+      { id: 137, label: 'Zugfahrzeug Pferdetransport' },
+      { id: 165, label: 'LauKW' },
     ],
     12: [
+      { id: 28, label: 'RTW' },
+      { id: 58, label: 'KTW Typ B' },
+      { id: 59, label: 'ELW 1 (SEG)' },
+      { id: 60, label: 'GW-San' },
+      { id: 63, label: 'GW-Taucher' },
+      { id: 64, label: 'GW-Wasserrettung' },
+      { id: 70, label: 'MZB' },
+      { id: 91, label: 'Rettungshundefahrzeug' },
+      { id: 127, label: 'GW UAS (Drohnenfahrzeug)' },
+      { id: 130, label: 'GW-Bt' },
+      { id: 131, label: 'Bt-Kombi' },
+      { id: 132, label: 'FKH' },
+      { id: 133, label: 'Bt LKW' },
       { id: 171, label: 'GW TeSi' },
+      { id: 172, label: 'LKW Technik (Notstrom)' },
       { id: 173, label: 'MTW TeSi' },
       { id: 174, label: 'Anh TeSi' },
+      { id: 175, label: 'NEA 50' },
+    ],
+    13: [
+      { id: 61, label: 'Polizeihubschrauber' },
+      { id: 99, label: 'Außenlastbehälter (allg.)' },
     ],
     15: [
       { id: 63, label: 'GW-Taucher' },
-      { id: 64, label: 'GW-Wasser' },
-      { id: 70, label: 'Boot' },
+      { id: 64, label: 'GW-Wasserrettung' },
+      { id: 70, label: 'MZB' },
     ]
   };
 
@@ -202,8 +344,35 @@
   //----------------------------------------------
   function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
+  function getBuildingIdFromUrl() {
+    return Number(location.pathname.split('/').filter(Boolean).pop());
+  }
+
+  function getCsrfToken() {
+    return document.querySelector('meta[name=csrf-token]')?.content || $('meta[name=csrf-token]').attr('content');
+  }
+
   function findDefaultConfigForType(typeId) {
     return DEFAULT_VEHICLE_CONFIGS.find(c => c.buildingID === Number(typeId)) || null;
+  }
+
+  function isSupportedType(typeId) {
+    return BUILDING_TYPES.some(t => t.id === Number(typeId));
+  }
+
+  function getBuildingCaption(building) {
+    return building.caption || building.name || `Gebäude ${building.id}`;
+  }
+
+  function normalizeApiBuilding(building) {
+    return {
+      ...building,
+      id: Number(building.id),
+      name: getBuildingCaption(building),
+      type: Number(building.building_type),
+      building_type: Number(building.building_type),
+      leitstelle_building_id: building.leitstelle_building_id == null ? null : Number(building.leitstelle_building_id)
+    };
   }
 
   function parseStoredVehicles(raw) {
@@ -239,12 +408,10 @@
   async function getConfigForType(typeId) {
     const key = KEY_VEHICLES_PREFIX + String(typeId);
     const raw = await GM_getValue(key, '[]');
-    let vehicles = parseStoredVehicles(raw);
+    const vehicles = parseStoredVehicles(raw)
+      .filter(([, cnt]) => Number.isInteger(cnt) && cnt > 0);
 
     const def = findDefaultConfigForType(typeId);
-    if ((!vehicles || !vehicles.length) && def && Array.isArray(def.vehicles)) {
-      vehicles = def.vehicles.map(([id, cnt]) => [id, cnt]);
-    }
 
     if (!vehicles || !vehicles.length) return null;
 
@@ -256,7 +423,7 @@
   }
 
   //----------------------------------------------
-  // BOTTOM-BAR WIE BEIM LEVEL-SCRIPT (eigene IDs)
+  // BOTTOM-BAR
   //----------------------------------------------
   function ensureStyles() {
     if (document.getElementById('abv-style')) return;
@@ -267,7 +434,7 @@
       body.abv-hasbar { padding-bottom: 40px !important; }
       #abv-wrap { display:flex; align-items:center; gap:12px; }
       #abv-state { min-width:240px; font-size:13px; }
-      #abv-progress { flex:1; height:12px; margin:0; background:#eee; border-radius:4px; overflow:hidden; }
+      #abv-progress { flex:1; height:12px; margin:0; background:#eee; border-radius:4px; overflow:hidden; display:flex; }
       #abv-bar-ok  { height:100%; background:#5cb85c; width:0%; }
       #abv-bar-err { height:100%; background:#d9534f; width:0%; }
     `;
@@ -288,8 +455,7 @@
   }
 
   function destroyNavbar() {
-    const nav = document.getElementById('abv-nav');
-    if (nav) nav.remove();
+    document.getElementById('abv-nav')?.remove();
     document.body.classList.remove('abv-hasbar');
   }
 
@@ -319,6 +485,16 @@
   // SETTINGS-SEITE
   //----------------------------------------------
   if (location.pathname.startsWith('/settings/index')) {
+    if (!document.getElementById('abv-settings-style')) {
+      const settingsStyle = document.createElement('style');
+      settingsStyle.id = 'abv-settings-style';
+      settingsStyle.textContent = `
+        body { padding-bottom: 140px !important; }
+        #${SETTINGS_IDENTIFIER} { padding-bottom: 140px !important; }
+      `;
+      document.head.appendChild(settingsStyle);
+    }
+
     await addOptions({
       identifier: SETTINGS_IDENTIFIER,
       title: 'Autobuy Vehicles',
@@ -347,7 +523,7 @@
           default: DEFAULT_DELAY_AFTER_FETCH,
           min: 0,
           max: 5000,
-          label: 'Delay nach Seitenabruf [ms] (Leitstelle)'
+          label: 'Delay nach Seitenabruf [ms] (nur Fallback)'
         }
       ]
     });
@@ -423,19 +599,18 @@
       const { row, typeId } = rowInfo;
       const key = KEY_VEHICLES_PREFIX + String(typeId);
       const raw = await GM_getValue(key, '[]');
-      let parsed = parseStoredVehicles(raw);
+      const parsed = parseStoredVehicles(raw);
 
-      const def = findDefaultConfigForType(typeId);
-      if ((!parsed || !parsed.length) && def && def.vehicles) {
-        parsed = def.vehicles;
-      }
-
-      const map = new Map(parsed.map(([id, cnt]) => [String(id), cnt]));
+      const map = new Map(
+        parsed
+          .filter(([, cnt]) => Number.isInteger(cnt) && cnt > 0)
+          .map(([id, cnt]) => [String(id), cnt])
+      );
 
       row.querySelectorAll('input[data-vehicle-id]').forEach(input => {
         const vid = input.dataset.vehicleId;
         const val = map.get(vid);
-        input.value = Number.isInteger(val) ? String(val) : '';
+        input.value = Number.isInteger(val) && val > 0 ? String(val) : '';
       });
 
       const save = async () => {
@@ -443,11 +618,10 @@
         row.querySelectorAll('input[data-vehicle-id]').forEach(input => {
           const vid = parseInt(input.dataset.vehicleId, 10);
           const cnt = parseInt(input.value, 10);
-          if (Number.isInteger(cnt) && cnt >= 0) {
+          if (Number.isInteger(cnt) && cnt > 0) {
             arr.push([vid, cnt]);
           }
         });
-        await GM_getValue; // dummy to keep linter ruhig
         await GM_setValue(key, JSON.stringify(arr));
       };
 
@@ -457,104 +631,251 @@
     }
 
     const rows = [];
-    for (const t of BUILDING_TYPES) {
-      rows.push(createTypeRow(t));
-    }
-    for (const r of rows) {
-      await initRowState(r);
-    }
+    for (const t of BUILDING_TYPES) rows.push(createTypeRow(t));
+    for (const r of rows) await initRowState(r);
 
     return;
   }
 
   //----------------------------------------------
-  // GEBÄUDE / FAHRZEUGE HILFSFUNKTIONEN
+  // API-SPEICHER / INDEXEDDB
   //----------------------------------------------
-  async function getBuildingsOfLeitstelle(leitstellenId, DELAY_AFTER_FETCH) {
-    let out = [];
-    try {
-      const res = await fetch(`/buildings/${leitstellenId}/leitstelle-buildings`);
-      const html = await res.text();
-      const doc = new DOMParser().parseFromString(html, "text/html");
-
-      const links = Array.from(doc.querySelectorAll("a[href^='/buildings/']"));
-      if (links.length > 0) {
-        const seen = new Set();
-        out = links
-          .map(a => {
-            const id = a.getAttribute("href").split("/buildings/")[1].split("/")[0];
-            const name = a.innerText.trim();
-            return { id, name, type: null };
-          })
-          .filter(b => /^\d+$/.test(b.id))
-          .filter(b => (seen.has(b.id) ? false : (seen.add(b.id), true)));
-      }
-    } catch {}
-
-    for (const b of out) {
-      try {
-        const page = await fetch(`/buildings/${b.id}`);
-        const html = await page.text();
-        const doc = new DOMParser().parseFromString(html, "text/html");
-        const h1 = doc.querySelector("h1[building_type]");
-        if (h1) b.type = h1.getAttribute("building_type");
-        const h1Text = doc.querySelector("h1")?.textContent?.trim();
-        if (h1Text) b.name = h1Text;
-        await delay(DELAY_AFTER_FETCH);
-      } catch {}
+  async function loadApiBuildingsFromCache(maxAgeSeconds = 60) {
+    if (typeof openDb !== 'function' || typeof updateBuildings !== 'function') {
+      throw new Error('API-Speicher ist nicht verfügbar.');
     }
+
+    const db = await openDb();
+    await updateBuildings(db, maxAgeSeconds);
+
+    const tryLoaders = [
+      async () => {
+        if (typeof getDataByIndex !== 'function') return null;
+        return await getDataByIndex(db, 'buildings', 'building_type', IDBKeyRange.bound(0, 999));
+      },
+      async () => {
+        if (typeof getDataByIndex !== 'function') return null;
+        return await getDataByIndex(db, 'buildings', 'building_type', IDBKeyRange.lowerBound(0));
+      },
+      async () => {
+        if (typeof getAllData !== 'function') return null;
+        return await getAllData(db, 'buildings');
+      },
+      async () => {
+        if (typeof getData !== 'function') return null;
+        return await getData(db, 'buildings');
+      },
+      async () => {
+        return await new Promise((resolve, reject) => {
+          const transaction = db.transaction('buildings', 'readonly');
+          const store = transaction.objectStore('buildings');
+          const request = store.getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error || new Error('Gebäude konnten nicht aus IndexedDB geladen werden.'));
+        });
+      }
+    ];
+
+    let lastError = null;
+
+    for (const loader of tryLoaders) {
+      try {
+        const data = await loader();
+        if (Array.isArray(data)) {
+          console.log('[Autobuy Vehicles] Gebäude aus API-Speicher geladen:', data.length);
+          return data.map(normalizeApiBuilding);
+        }
+      } catch (e) {
+        lastError = e;
+        console.warn('[Autobuy Vehicles] Gebäude-Loader fehlgeschlagen, versuche nächsten Loader:', e);
+      }
+    }
+
+    throw lastError || new Error('Keine Gebäude aus API-Speicher geladen.');
+  }
+
+  async function getBuildingsOfLeitstelleFromApi(leitstellenId) {
+    const targetId = Number(leitstellenId);
+    const allBuildings = await loadApiBuildingsFromCache(60);
+
+    return allBuildings
+      .filter(b => b.leitstelle_building_id === targetId)
+      .filter(b => isSupportedType(b.building_type))
+      .filter(b => !buildingsIDToIgnore.includes(Number(b.building_type)))
+      .sort((a, b) => a.id - b.id);
+  }
+
+  async function getApiBuildingById(buildingId) {
+    const id = Number(buildingId);
+    const allBuildings = await loadApiBuildingsFromCache(60);
+    return allBuildings.find(b => Number(b.id) === id) || null;
+  }
+
+  //----------------------------------------------
+  // HTML-FALLBACK FÜR GEBÄUDE
+  //----------------------------------------------
+  async function getBuildingsOfLeitstelleFallback(leitstellenId, delayAfterFetch) {
+    const out = [];
+
+    try {
+      const res = await fetch(`/buildings/${leitstellenId}/leitstelle-buildings`, { credentials: 'same-origin' });
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const links = Array.from(doc.querySelectorAll("a[href^='/buildings/']"));
+      const seen = new Set();
+
+      for (const a of links) {
+        const id = Number(a.getAttribute('href').split('/buildings/')[1].split('/')[0]);
+        if (!Number.isFinite(id) || seen.has(id)) continue;
+        seen.add(id);
+
+        try {
+          const page = await fetch(`/buildings/${id}`, { credentials: 'same-origin' });
+          const pageHtml = await page.text();
+          const pageDoc = new DOMParser().parseFromString(pageHtml, 'text/html');
+          const h1 = pageDoc.querySelector('h1[building_type]');
+          const type = h1 ? Number(h1.getAttribute('building_type')) : null;
+          if (!isSupportedType(type) || buildingsIDToIgnore.includes(type)) continue;
+
+          out.push({
+            id,
+            name: pageDoc.querySelector('h1')?.textContent?.trim() || a.innerText.trim() || `Gebäude ${id}`,
+            type,
+            building_type: type,
+            leitstelle_building_id: Number(leitstellenId)
+          });
+
+          if (delayAfterFetch > 0) await delay(delayAfterFetch);
+        } catch (e) {
+          console.warn('[Autobuy Vehicles] Fallback-Gebäude konnte nicht geladen werden:', id, e);
+        }
+      }
+    } catch (e) {
+      console.error('[Autobuy Vehicles] HTML-Fallback fehlgeschlagen:', e);
+    }
+
     return out;
   }
 
+  async function getBuildingsOfLeitstelle(leitstellenId, delayAfterFetch) {
+    try {
+      const buildings = await getBuildingsOfLeitstelleFromApi(leitstellenId);
+      if (Array.isArray(buildings)) return buildings;
+    } catch (e) {
+      console.warn('[Autobuy Vehicles] API-Speicher fehlgeschlagen, nutze HTML-Fallback:', e);
+    }
+
+    return await getBuildingsOfLeitstelleFallback(leitstellenId, delayAfterFetch);
+  }
+
+  //----------------------------------------------
+  // FAHRZEUGE LESEN
+  //----------------------------------------------
   async function getVehiclesOfLeitstelle(leitstellenId) {
+    // Zentrale Fahrzeugübersicht der Leitstelle ist weiterhin effizienter als pro Gebäude /vehicles aufzurufen.
     const tabLink = document.querySelector(`a[href="#tab_vehicle"]`);
     if (tabLink) tabLink.click();
 
     let tries = 0;
     while (tries < 50) {
-      const rows = document.querySelectorAll("#tab_vehicle tr");
+      const rows = document.querySelectorAll('#tab_vehicle tr');
       if (rows.length > 0) break;
       await delay(100);
       tries++;
     }
 
-    let vehicles = [];
-    const rows = document.querySelectorAll("#tab_vehicle tr");
+    const vehicles = [];
+    const rows = document.querySelectorAll('#tab_vehicle tr');
 
     rows.forEach(tr => {
-      let buildingId = tr.getAttribute("building_id") || tr.getAttribute("data-building_id");
+      let buildingId = tr.getAttribute('building_id') || tr.getAttribute('data-building_id');
       if (!buildingId) {
         const link = tr.querySelector("a[href*='/buildings/']");
-        if (link) buildingId = link.href.split("/buildings/")[1].split("/")[0];
+        if (link) buildingId = link.href.split('/buildings/')[1].split('/')[0];
       }
-      tr.querySelectorAll("img[vehicle_type_id]").forEach(img => {
-        vehicles.push({ type: img.getAttribute("vehicle_type_id"), building: buildingId });
+
+      tr.querySelectorAll('img[vehicle_type_id]').forEach(img => {
+        vehicles.push({
+          type: Number(img.getAttribute('vehicle_type_id')),
+          building: Number(buildingId)
+        });
       });
     });
 
-    return vehicles.filter(v => v.building);
+    return vehicles.filter(v => Number.isFinite(v.building) && Number.isFinite(v.type));
   }
 
   async function getVehiclesOfBuilding(buildingId) {
-    const res = await fetch(`/buildings/${buildingId}/vehicles`);
+    const res = await fetch(`/buildings/${buildingId}/vehicles`, { credentials: 'same-origin' });
     const html = await res.text();
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    return Array.from(doc.querySelectorAll("img[vehicle_type_id]"))
-      .map(img => img.getAttribute("vehicle_type_id"));
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return Array.from(doc.querySelectorAll('img[vehicle_type_id]'))
+      .map(img => Number(img.getAttribute('vehicle_type_id')))
+      .filter(Number.isFinite);
   }
 
   //----------------------------------------------
-  // AUTOBUY (LEITSTELLE) MIT BOTTOM-BAR
+  // KAUF
+  //----------------------------------------------
+  async function buyVehicle(buildingId, vehicleType) {
+    const token = getCsrfToken();
+    const response = await fetch(`/buildings/${buildingId}/vehicle/${buildingId}/${vehicleType}/credits?building=${buildingId}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-CSRF-Token': token,
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: new URLSearchParams({
+        _method: 'get',
+        authenticity_token: token
+      }),
+      redirect: 'manual'
+    });
+
+    if (response.status >= 400) {
+      throw new Error(`Fahrzeug ${vehicleType} konnte bei Gebäude ${buildingId} nicht gekauft werden. Status: ${response.status}`);
+    }
+  }
+
+  async function buyMissingVehiclesForBuilding(building, config, vehicleCountMap, delayPerVehicle) {
+    for (const [vehicleTypeRaw, wanted] of config.vehicles) {
+      const vehicleType = Number(vehicleTypeRaw);
+      if (!Number.isInteger(vehicleType) || !Number.isInteger(wanted) || wanted <= 0) continue;
+
+      const key = `${building.id}:${vehicleType}`;
+      const current = vehicleCountMap.get(key) || 0;
+      const toBuy = Math.max(0, wanted - current);
+      if (toBuy === 0) continue;
+
+      for (let i = 0; i < toBuy; i++) {
+        await buyVehicle(building.id, vehicleType);
+        vehicleCountMap.set(key, (vehicleCountMap.get(key) || 0) + 1);
+        if (delayPerVehicle > 0) await delay(delayPerVehicle);
+      }
+    }
+  }
+
+  //----------------------------------------------
+  // AUTOBUY LEITSTELLE
   //----------------------------------------------
   async function autobuyForLeitstelle(leitstellenId, DELAY_PER_VEHICLE, DELAY_PER_BUILDING, DELAY_AFTER_FETCH) {
+    setState('Lade Gebäude über API-Speicher…', 'info');
     const buildings = await getBuildingsOfLeitstelle(leitstellenId, DELAY_AFTER_FETCH);
+
+    setState('Lade vorhandene Fahrzeuge…', 'info');
     const vehicles = await getVehiclesOfLeitstelle(leitstellenId);
 
-    // nur Gebäude zählen, für die es überhaupt eine Config gibt
+    const vehicleCountMap = new Map();
+    for (const v of vehicles) {
+      const key = `${v.building}:${v.type}`;
+      vehicleCountMap.set(key, (vehicleCountMap.get(key) || 0) + 1);
+    }
+
     const targets = [];
     for (const b of buildings) {
-      if (!b.type) continue;
-      const cfg = await getConfigForType(Number(b.type));
+      const cfg = await getConfigForType(Number(b.type ?? b.building_type));
       if (cfg && cfg.vehicles && cfg.vehicles.length) {
         targets.push({ building: b, config: cfg });
       }
@@ -566,7 +887,9 @@
       return;
     }
 
-    let ok = 0, err = 0, total = targets.length;
+    let ok = 0;
+    let err = 0;
+    const total = targets.length;
 
     for (const t of targets) {
       if (!sessionStorage.getItem(RUN_FLAG)) break;
@@ -577,158 +900,190 @@
       try {
         setState(`${b.name}`, 'info');
         updateProgress(ok, err, total, `${b.name}`);
-
-        for (const [vehicleType, wanted] of config.vehicles) {
-          if (!Number.isInteger(wanted) || wanted <= 0) continue;
-
-          const current = vehicles.filter(
-            v => String(v.building) === String(b.id) && String(v.type) === String(vehicleType)
-          ).length;
-          const toBuy = Math.max(0, wanted - current);
-          if (toBuy === 0) continue;
-
-          const buyPromises = [];
-          for (let i = 0; i < toBuy; i++) {
-            buyPromises.push(
-              $.post(`/buildings/${b.id}/vehicle/${b.id}/${vehicleType}/credits?building=${b.id}`, {
-                "_method": "get",
-                "authenticity_token": $("meta[name=csrf-token]").attr("content")
-              })
-            );
-          }
-          await Promise.all(buyPromises);
-          await delay(DELAY_PER_VEHICLE);
-        }
-
+        await buyMissingVehiclesForBuilding(b, config, vehicleCountMap, DELAY_PER_VEHICLE);
         ok++;
-      } catch {
+      } catch (e) {
+        console.error('[Autobuy Vehicles] Fehler bei Gebäude', b.id, b.name, e);
         err++;
       }
+
       updateProgress(ok, err, total);
-      await delay(DELAY_PER_BUILDING);
+      if (DELAY_PER_BUILDING > 0) await delay(DELAY_PER_BUILDING);
     }
 
-    setState('Fertig', 'success');
+    setState('Fertig', err ? 'warning' : 'success');
     setTimeout(destroyNavbar, 1500);
   }
 
   //----------------------------------------------
-  // HAUPTLOGIK (Gebäudeseiten)
+  // HAUPTLOGIK
   //----------------------------------------------
-  const titleDiv = Array.from(document.getElementsByTagName("h1"))
-    .find(e => e.getAttribute("building_type") != null);
+  const titleDiv = Array.from(document.getElementsByTagName('h1'))
+    .find(e => e.getAttribute('building_type') != null);
   if (!titleDiv) return;
 
-  const buildingTypeID = Number(titleDiv.getAttribute("building_type"));
-  const buildingId = Number(window.location.pathname.split("/").pop());
+  const buildingTypeID = Number(titleDiv.getAttribute('building_type'));
+  const buildingId = getBuildingIdFromUrl();
 
   const { DELAY_PER_VEHICLE, DELAY_PER_BUILDING, DELAY_AFTER_FETCH } = await getConfiguredDelays();
 
-  // Leitstelle
+  //----------------------------------------------
+  // LEITSTELLE: BUTTON IM GEBÄUDEDETAIL-BEREICH
+  //----------------------------------------------
   if (buildingTypeID === 7) {
-    const wrapperDIV = document.createElement("div");
-    wrapperDIV.style.padding = "5px 0";
-    titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
+    function addAutobuyButtonToBuildingDetails() {
+      const buildingDetailsElement = document.querySelector('.building-title ~ dl.dl-horizontal');
+      if (!buildingDetailsElement) return;
+      if (document.getElementById('abv-building-details-buttons')) return;
 
-    const btn = document.createElement("a");
-    btn.className = "btn btn-success btn-xs";
-    btn.innerText = "Autobuy Vehicles";
-    wrapperDIV.appendChild(btn);
+      const dtElement = document.createElement('dt');
+      const dtTextElement = document.createElement('strong');
+      dtTextElement.innerText = 'Fahrzeuge kaufen:';
+      dtElement.appendChild(dtTextElement);
 
-    const btnSettings = document.createElement("a");
-    btnSettings.className = "btn btn-default btn-xs";
-    btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
-    btnSettings.target = '_blank';
-    const cog = document.createElement('span');
-    cog.className = 'glyphicon glyphicon-cog';
-    cog.title = 'Einstellungen';
-    btnSettings.appendChild(cog);
-    wrapperDIV.appendChild(btnSettings);
+      const buttonGroup = document.createElement('div');
+      buttonGroup.id = 'abv-building-details-buttons';
+      buttonGroup.className = 'btn-group';
 
-    btn.addEventListener("click", async function () {
-      if (sessionStorage.getItem(RUN_FLAG)) sessionStorage.removeItem(RUN_FLAG);
-      sessionStorage.setItem(RUN_FLAG, 'true');
+      const btn = document.createElement('a');
+      btn.href = '';
+      btn.className = 'btn btn-default btn-xs';
+      btn.innerText = 'Autobuy Vehicles';
 
-      createNavbar();
-      setState('Lade Gebäudeliste…', 'info');
+      const btnSettings = document.createElement('a');
+      btnSettings.className = 'btn btn-default btn-xs';
+      btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+      btnSettings.target = '_blank';
 
-      await autobuyForLeitstelle(buildingId, DELAY_PER_VEHICLE, DELAY_PER_BUILDING, DELAY_AFTER_FETCH);
+      const cog = document.createElement('span');
+      cog.className = 'glyphicon glyphicon-cog';
+      cog.title = 'Einstellungen';
+      btnSettings.appendChild(cog);
 
-      sessionStorage.removeItem(RUN_FLAG);
-    });
+      btn.addEventListener('click', async function (event) {
+        event.preventDefault();
+        if (btn.classList.contains('disabled')) return;
+        btn.classList.add('disabled');
+
+        if (sessionStorage.getItem(RUN_FLAG)) sessionStorage.removeItem(RUN_FLAG);
+        sessionStorage.setItem(RUN_FLAG, 'true');
+
+        createNavbar();
+        updateProgress(0, 0, 1);
+
+        try {
+          await autobuyForLeitstelle(buildingId, DELAY_PER_VEHICLE, DELAY_PER_BUILDING, DELAY_AFTER_FETCH);
+        } catch (e) {
+          console.error('[Autobuy Vehicles] Leitstellenlauf fehlgeschlagen', e);
+          setState('Fehler beim Leitstellenlauf', 'danger');
+        }
+
+        sessionStorage.removeItem(RUN_FLAG);
+        btn.classList.remove('disabled');
+      });
+
+      buttonGroup.append(btn, btnSettings);
+
+      const ddElement = document.createElement('dd');
+      ddElement.appendChild(buttonGroup);
+
+      buildingDetailsElement.appendChild(dtElement);
+      buildingDetailsElement.appendChild(ddElement);
+    }
+
+    addAutobuyButtonToBuildingDetails();
     return;
   }
 
-  // Einzelgebäude
+  //----------------------------------------------
+  // EINZELGEBÄUDE
+  //----------------------------------------------
   if (buildingsIDToIgnore.indexOf(buildingTypeID) >= 0) return;
+  if (!isSupportedType(buildingTypeID)) return;
 
-  const wrapperDIV = document.createElement("div");
-  wrapperDIV.style.padding = "10px 0";
-  titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
+  (function addSingleBuildingButton() {
+    const buildingDetailsElement = document.querySelector('.building-title ~ dl.dl-horizontal');
 
-  const btnSingle = document.createElement("a");
-  btnSingle.className = "btn btn-success btn-xs";
-  btnSingle.innerText = "Autobuy (laut Einstellungen)";
-  btnSingle.style.marginRight = "6px";
-  wrapperDIV.appendChild(btnSingle);
+    if (buildingDetailsElement && !document.getElementById('abv-single-building-details-buttons')) {
+      const dtElement = document.createElement('dt');
+      const dtTextElement = document.createElement('strong');
+      dtTextElement.innerText = 'Autobuy Vehicles:';
+      dtElement.appendChild(dtTextElement);
 
-  const btnSettingsSingle = document.createElement("a");
-  btnSettingsSingle.className = "btn btn-default btn-xs";
-  btnSettingsSingle.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
-  btnSettingsSingle.target = '_blank';
-  const cog2 = document.createElement('span');
-  cog2.className = 'glyphicon glyphicon-cog';
-  cog2.title = 'Einstellungen';
-  btnSettingsSingle.appendChild(cog2);
-  wrapperDIV.appendChild(btnSettingsSingle);
+      const buttonGroup = document.createElement('div');
+      buttonGroup.id = 'abv-single-building-details-buttons';
+      buttonGroup.className = 'btn-group';
 
-  // optionaler (versteckter) Textstatus – falls du ihn später wieder brauchst
-  const statusDivSingle = document.createElement("div");
-  statusDivSingle.style.marginTop = "10px";
-  statusDivSingle.style.fontWeight = "bold";
-  statusDivSingle.style.display = "none"; // unsichtbar, wir nutzen die Bottom-Bar
-  wrapperDIV.appendChild(statusDivSingle);
+      const btnSingle = document.createElement('a');
+      btnSingle.href = '';
+      btnSingle.className = 'btn btn-default btn-xs';
+      btnSingle.innerText = 'Autobuy Vehicles';
 
-  btnSingle.addEventListener("click", async function () {
-    const config = await getConfigForType(buildingTypeID);
-    if (!config || !config.vehicles || !config.vehicles.length) {
-      alert('Für diesen Gebäudetyp sind in den Einstellungen keine Fahrzeuge hinterlegt.');
+      const btnSettingsSingle = document.createElement('a');
+      btnSettingsSingle.className = 'btn btn-default btn-xs';
+      btnSettingsSingle.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+      btnSettingsSingle.target = '_blank';
+
+      const cog2 = document.createElement('span');
+      cog2.className = 'glyphicon glyphicon-cog';
+      cog2.title = 'Einstellungen';
+      btnSettingsSingle.appendChild(cog2);
+
+      btnSingle.addEventListener('click', async function (event) {
+        event.preventDefault();
+
+        const config = await getConfigForType(buildingTypeID);
+        if (!config || !config.vehicles || !config.vehicles.length) {
+          alert('Für diesen Gebäudetyp sind in den Einstellungen keine Fahrzeuge hinterlegt.');
+          return;
+        }
+
+        const allVehicles = await getVehiclesOfBuilding(buildingId);
+        const vehicleCountMap = new Map();
+        for (const vehicleType of allVehicles) {
+          const key = `${buildingId}:${vehicleType}`;
+          vehicleCountMap.set(key, (vehicleCountMap.get(key) || 0) + 1);
+        }
+
+        createNavbar();
+        setState('Kaufe Fahrzeuge…', 'info');
+        updateProgress(0, 0, 1, 'Kaufe Fahrzeuge');
+
+        try {
+          const apiBuilding = await getApiBuildingById(buildingId).catch(() => null);
+          const building = apiBuilding || { id: buildingId, name: titleDiv.textContent.trim(), type: buildingTypeID, building_type: buildingTypeID };
+          await buyMissingVehiclesForBuilding(building, config, vehicleCountMap, DELAY_PER_VEHICLE);
+          updateProgress(1, 0, 1);
+          setState('Fertig', 'success');
+          if (DELAY_PER_BUILDING > 0) await delay(DELAY_PER_BUILDING);
+          location.reload();
+        } catch (e) {
+          console.error('[Autobuy Vehicles] Fehler beim Einzelgebäude', buildingId, e);
+          updateProgress(0, 1, 1);
+          setState('Fehler', 'danger');
+          setTimeout(destroyNavbar, 1500);
+        }
+      });
+
+      buttonGroup.append(btnSingle, btnSettingsSingle);
+
+      const ddElement = document.createElement('dd');
+      ddElement.appendChild(buttonGroup);
+
+      buildingDetailsElement.appendChild(dtElement);
+      buildingDetailsElement.appendChild(ddElement);
       return;
     }
 
-    const allVehicles = await getVehiclesOfBuilding(buildingId);
-    let bought = false;
+    // Fallback, falls die Detail-Liste nicht vorhanden ist
+    const wrapperDIV = document.createElement('div');
+    wrapperDIV.style.padding = '10px 0';
+    titleDiv.parentNode.parentNode.insertBefore(wrapperDIV, titleDiv.parentNode.nextSibling);
 
-    createNavbar();
-    setState("Kaufe Fahrzeuge...", 'info');
-    updateProgress(0, 0, 1, "Kaufe Fahrzeuge");
-
-    try {
-      for (const [vehicleType, wanted] of config.vehicles) {
-        if (!Number.isInteger(wanted) || wanted <= 0) continue;
-        const current = allVehicles.filter(v => v === vehicleType.toString()).length;
-        const toBuy = Math.max(0, wanted - current);
-        for (let i = 0; i < toBuy; i++) {
-          await $.post(`/buildings/${buildingId}/vehicle/${buildingId}/${vehicleType}/credits?building=${buildingId}`, {
-            "_method": "get",
-            "authenticity_token": $("meta[name=csrf-token]").attr("content")
-          });
-          await delay(DELAY_PER_VEHICLE);
-          bought = true;
-        }
-      }
-
-      updateProgress(1, 0, 1);
-      setState('Fertig', 'success');
-      await delay(DELAY_PER_BUILDING);
-      if (bought) location.reload();
-    } catch {
-      updateProgress(0, 1, 1);
-      setState('Fehler', 'danger');
-      setTimeout(destroyNavbar, 1500);
-    } finally {
-      if (!bought) setTimeout(destroyNavbar, 1500);
-    }
-  });
+    const btnSingle = document.createElement('a');
+    btnSingle.className = 'btn btn-success btn-xs';
+    btnSingle.innerText = 'autobuy vehicles';
+    wrapperDIV.appendChild(btnSingle);
+  })();
 
 })();
