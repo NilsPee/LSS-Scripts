@@ -1,0 +1,359 @@
+// ==UserScript==
+// @name         Leitstellen-Wachenverschieber
+// @namespace    http://tampermonkey.net/
+// @version      1.0.0
+// @description  Verschiebt Wachen aus einer Leitstelle in eine andere anhand eines Namensfilters – mit Einstellungsseite
+// @author       ChatGPT
+// @match        https://www.leitstellenspiel.de/buildings/*
+// @match        https://www.leitstellenspiel.de/settings/index*
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=leitstellenspiel.de
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @require      https://update.greasyfork.org/scripts/528065/Skripteinstellungen.user.js
+// ==/UserScript==
+
+(async function () {
+  'use strict';
+
+  const SETTINGS_IDENTIFIER = 'leitstellen_wachenverschieber_settings';
+
+  const KEY_TARGET_LEITSTELLE_ID = 'lwv_target_leitstelle_id';
+  const KEY_NAME_FILTER = 'lwv_name_filter';
+  const KEY_DELAY_PER_ACTION = 'lwv_delay_per_action';
+  const KEY_DRY_RUN = 'lwv_dry_run';
+  const KEY_REQUIRE_CONFIRM = 'lwv_require_confirm';
+
+  const DEFAULT_DELAY_PER_ACTION = 250;
+
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function getCsrfToken() {
+    return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+  }
+
+  function currentBuildingId() {
+    const match = location.pathname.match(/^\/buildings\/(\d+)/);
+    return match ? match[1] : null;
+  }
+
+  function isLeitstellePage() {
+    const h1 = document.querySelector('h1[building_type]');
+    return h1?.getAttribute('building_type') === '7';
+  }
+
+  function normalize(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  async function getSettings() {
+    return {
+      targetLeitstelleId: String(await GM_getValue(KEY_TARGET_LEITSTELLE_ID, '') || '').trim(),
+      nameFilter: String(await GM_getValue(KEY_NAME_FILTER, '') || '').trim(),
+      delayPerAction: Number(await GM_getValue(KEY_DELAY_PER_ACTION, DEFAULT_DELAY_PER_ACTION)) || DEFAULT_DELAY_PER_ACTION,
+      dryRun: Boolean(await GM_getValue(KEY_DRY_RUN, false)),
+      requireConfirm: Boolean(await GM_getValue(KEY_REQUIRE_CONFIRM, true)),
+    };
+  }
+
+  function ensureStyles() {
+    if (document.getElementById('lwv-style')) return;
+
+    const style = document.createElement('style');
+    style.id = 'lwv-style';
+    style.textContent = `
+      #lwv-progressbar {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 2147483000;
+        background: #f8f8f8;
+        border-top: 1px solid #ddd;
+        padding: 7px 10px;
+        font-size: 13px;
+      }
+      #lwv-progressbar .lwv-wrap {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      #lwv-progressbar .lwv-state {
+        min-width: 280px;
+      }
+      #lwv-progressbar .lwv-progress {
+        flex: 1;
+        height: 12px;
+        background: #eee;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      #lwv-progressbar .lwv-ok {
+        height: 100%;
+        width: 0%;
+        background: #5cb85c;
+        float: left;
+      }
+      #lwv-progressbar .lwv-err {
+        height: 100%;
+        width: 0%;
+        background: #d9534f;
+        float: left;
+      }
+      body.lwv-has-progressbar {
+        padding-bottom: 42px !important;
+      }
+      .lwv-controls {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        margin: 10px 0;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function createProgressbar() {
+    ensureStyles();
+    if (document.getElementById('lwv-progressbar')) return;
+
+    const bar = document.createElement('div');
+    bar.id = 'lwv-progressbar';
+    bar.innerHTML = `
+      <div class="lwv-wrap">
+        <span class="label label-info lwv-state">Bereit</span>
+        <div class="lwv-progress">
+          <div class="lwv-ok"></div>
+          <div class="lwv-err"></div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(bar);
+    document.body.classList.add('lwv-has-progressbar');
+  }
+
+  function destroyProgressbar() {
+    document.getElementById('lwv-progressbar')?.remove();
+    document.body.classList.remove('lwv-has-progressbar');
+  }
+
+  function setState(text, type = 'info') {
+    const state = document.querySelector('#lwv-progressbar .lwv-state');
+    if (!state) return;
+    state.className = `label label-${type} lwv-state`;
+    state.textContent = text;
+  }
+
+  function updateProgress(ok, err, total) {
+    const okBar = document.querySelector('#lwv-progressbar .lwv-ok');
+    const errBar = document.querySelector('#lwv-progressbar .lwv-err');
+    const state = document.querySelector('#lwv-progressbar .lwv-state');
+    if (!okBar || !errBar || !state) return;
+
+    const safeTotal = Math.max(total, 1);
+    okBar.style.width = `${(ok / safeTotal) * 100}%`;
+    errBar.style.width = `${(err / safeTotal) * 100}%`;
+    state.textContent = `${ok + err}/${total} bearbeitet`;
+  }
+
+  function collectVisibleBuildingsFromTab() {
+    const rows = Array.from(document.querySelectorAll('#tab_buildings tbody tr'));
+    const seen = new Set();
+
+    return rows.map(row => {
+      const link = row.querySelector('a[href^="/buildings/"]');
+      const match = link?.getAttribute('href')?.match(/\/buildings\/(\d+)/);
+      if (!match) return null;
+
+      const id = match[1];
+      if (seen.has(id)) return null;
+      seen.add(id);
+
+      return {
+        id,
+        name: link.textContent.trim() || `Gebäude ${id}`,
+        row,
+      };
+    }).filter(Boolean);
+  }
+
+  function filterBuildingsByName(buildings, nameFilter) {
+    const needle = normalize(nameFilter);
+    if (!needle) return [];
+
+    return buildings.filter(building => normalize(building.name).includes(needle));
+  }
+
+  async function moveBuildingToLeitstelle(buildingId, targetLeitstelleId) {
+    // Im Leitstellenspiel ist das Verschieben ein normaler Link-Aufruf:
+    // /buildings/GEBAEUDE_ID/leitstelle-set/LEITSTELLEN_ID
+    // Der Ziellink muss nicht zwingend schon im aktuell sichtbaren Dropdown stehen.
+    const url = `/buildings/${buildingId}/leitstelle-set/${targetLeitstelleId}`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      credentials: 'same-origin',
+      redirect: 'follow',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} bei ${url}`);
+    }
+
+    return response;
+  }
+
+  async function runMover(button) {
+    const settings = await getSettings();
+
+    if (!settings.targetLeitstelleId) {
+      alert('Bitte zuerst in den Einstellungen eine Ziel-Leitstellen-ID eintragen.');
+      return;
+    }
+
+    if (!settings.nameFilter) {
+      alert('Bitte zuerst in den Einstellungen einen Namensfilter eintragen.');
+      return;
+    }
+
+    const allBuildings = collectVisibleBuildingsFromTab();
+    const matchingBuildings = filterBuildingsByName(allBuildings, settings.nameFilter);
+
+    if (!matchingBuildings.length) {
+      alert(`Keine sichtbaren Wachen mit dem Namensfilter "${settings.nameFilter}" gefunden.`);
+      return;
+    }
+
+    const message = settings.dryRun
+      ? `Testlauf: ${matchingBuildings.length} Wachen würden zur Leitstelle ${settings.targetLeitstelleId} verschoben werden.\n\n${matchingBuildings.map(b => `- ${b.name}`).join('\n')}`
+      : `${matchingBuildings.length} Wachen werden zur Leitstelle ${settings.targetLeitstelleId} verschoben.\n\n${matchingBuildings.map(b => `- ${b.name}`).join('\n')}`;
+
+    if (settings.requireConfirm && !confirm(message)) return;
+
+    button.disabled = true;
+    createProgressbar();
+    setState(settings.dryRun ? 'Testlauf läuft…' : 'Verschiebe Wachen…', 'info');
+    updateProgress(0, 0, matchingBuildings.length);
+
+    let ok = 0;
+    let err = 0;
+
+    for (const building of matchingBuildings) {
+      try {
+        setState(`${settings.dryRun ? 'Prüfe' : 'Verschiebe'} ${building.name}…`, 'info');
+
+        if (!settings.dryRun) {
+          await moveBuildingToLeitstelle(building.id, settings.targetLeitstelleId);
+        }
+
+        ok++;
+      } catch (error) {
+        console.error('[Leitstellen-Wachenverschieber] Fehler bei Gebäude', building, error);
+        err++;
+      }
+
+      updateProgress(ok, err, matchingBuildings.length);
+      await delay(settings.delayPerAction);
+    }
+
+    setState(settings.dryRun ? 'Testlauf abgeschlossen' : `Fertig: ${ok} verschoben, ${err} Fehler`, err ? 'warning' : 'success');
+
+    setTimeout(() => {
+      destroyProgressbar();
+      button.disabled = false;
+      if (!settings.dryRun) location.reload();
+    }, 1800);
+  }
+
+  async function buildSettingsPage() {
+    await addOptions({
+      identifier: SETTINGS_IDENTIFIER,
+      title: 'Leitstellen-Wachenverschieber',
+      settings: [
+        { type: 'header', text: 'Verschieben nach Namensfilter' },
+        {
+          type: 'text',
+          key: KEY_TARGET_LEITSTELLE_ID,
+          default: '',
+          label: 'Ziel-Leitstellen-ID',
+          title: 'Die ID der Leitstelle, in die die gefundenen Wachen verschoben werden sollen.'
+        },
+        {
+          type: 'text',
+          key: KEY_NAME_FILTER,
+          default: '',
+          label: 'Namensfilter',
+          title: 'Es werden nur sichtbare Wachen verschoben, deren Name diesen Text enthält.'
+        },
+        {
+          type: 'number',
+          key: KEY_DELAY_PER_ACTION,
+          default: DEFAULT_DELAY_PER_ACTION,
+          min: 0,
+          max: 10000,
+          label: 'Delay pro Wache [ms]'
+        },
+        {
+          type: 'checkbox',
+          key: KEY_REQUIRE_CONFIRM,
+          default: true,
+          label: 'Vor dem Verschieben Bestätigung anzeigen'
+        },
+        {
+          type: 'checkbox',
+          key: KEY_DRY_RUN,
+          default: false,
+          label: 'Testlauf aktivieren, nichts wirklich verschieben'
+        },
+        { type: 'header', text: 'Hinweis' }
+      ]
+    });
+  }
+
+  function addControlsToLeitstelle() {
+    const tab = document.querySelector('#tab_buildings');
+    if (!tab) return;
+
+    const table = tab.querySelector('table');
+    if (!table) return;
+
+    if (tab.querySelector('.lwv-controls')) return;
+
+    ensureStyles();
+
+    const box = document.createElement('div');
+    box.className = 'lwv-controls';
+
+    const moveButton = document.createElement('button');
+    moveButton.type = 'button';
+    moveButton.className = 'btn btn-success btn-xs';
+    moveButton.textContent = 'Wachen verschieben';
+
+    const settingsButton = document.createElement('a');
+    settingsButton.className = 'btn btn-default btn-xs';
+    settingsButton.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+    settingsButton.target = '_blank';
+    settingsButton.title = 'Einstellungen';
+    settingsButton.innerHTML = '<span class="glyphicon glyphicon-cog"></span>';
+
+    moveButton.addEventListener('click', () => runMover(moveButton));
+
+    box.appendChild(moveButton);
+    box.appendChild(settingsButton);
+
+    table.parentNode.insertBefore(box, table);
+  }
+
+  if (location.pathname.startsWith('/settings/index')) {
+    await buildSettingsPage();
+    return;
+  }
+
+  if (!currentBuildingId() || !isLeitstellePage()) return;
+
+  setInterval(addControlsToLeitstelle, 1000);
+})();
