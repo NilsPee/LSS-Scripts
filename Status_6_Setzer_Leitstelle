@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Leitstelle Status 6 vehicles (Settings + Dropdown + Bottom-Bar)
+// @name         Leitstelle Status 6 vehicles
 // @namespace    NilsPe.status6.vehicles
-// @version      1.5.1
-// @description  Setzt Fahrzeuge nach Typ auf Status 6 – Auswahl per Multi-Select (Klarname) auf /settings/index + Fortschrittsbalken unten
+// @version      1.6.0
+// @description  Setzt Fahrzeuge nach Typ auf Status 6 – komplette Fahrzeugliste, Settings-Dropdown und Bottom-Bar
 // @author       NilsPe
 // @match        https://www.leitstellenspiel.de/buildings/*
 // @match        https://www.leitstellenspiel.de/settings/index*
@@ -27,44 +27,168 @@
   const DEFAULT_KEEP_PER_STATION = 0;
 
   const VEHICLE_OPTIONS = [
+    { value: '0', label: 'LF 20' },
+    { value: '1', label: 'LF 10' },
     { value: '2', label: 'DLK 23' },
+    { value: '3', label: 'ELW 1' },
+    { value: '4', label: 'RW' },
     { value: '5', label: 'GW-A' },
+    { value: '6', label: 'LF 8/6' },
+    { value: '7', label: 'LF 20/16' },
+    { value: '8', label: 'LF 10/6' },
+    { value: '9', label: 'LF 16-TS' },
     { value: '10', label: 'GW-Öl' },
+    { value: '11', label: 'GW-L2-Wasser' },
     { value: '12', label: 'GW-Messtechnik' },
+    { value: '13', label: 'SW 1000' },
     { value: '14', label: 'SW 2000' },
+    { value: '15', label: 'SW 2000-Tr' },
+    { value: '16', label: 'SW Kats' },
+    { value: '17', label: 'TLF 2000' },
+    { value: '18', label: 'TLF 3000' },
+    { value: '19', label: 'TLF 8/8' },
+    { value: '20', label: 'TLF 8/18' },
+    { value: '21', label: 'TLF 16/24-Tr' },
+    { value: '22', label: 'TLF 16/25' },
+    { value: '23', label: 'TLF 16/45' },
+    { value: '24', label: 'TLF 20/40' },
+    { value: '25', label: 'TLF 20/40-SL' },
+    { value: '26', label: 'TLF 16' },
     { value: '27', label: 'GW-Gefahrgut' },
+    { value: '28', label: 'RTW' },
+    { value: '29', label: 'NEF' },
     { value: '30', label: 'HLF 20' },
+    { value: '31', label: 'Rettungshubschrauber' },
+    { value: '32', label: 'FuStW' },
     { value: '33', label: 'GW-Höhenrettung' },
     { value: '34', label: 'ELW 2' },
+    { value: '35', label: 'leBefKw' },
+    { value: '36', label: 'MTW' },
+    { value: '37', label: 'TSF-W' },
+    { value: '38', label: 'KTW' },
+    { value: '39', label: 'GKW' },
     { value: '40', label: 'MTW-TZ' },
+    { value: '41', label: 'MzGW (FGr N)' },
     { value: '42', label: 'LKW K 9' },
-    { value: '43', label: 'BRmG R' },
+    { value: '43', label: 'BrmG R' },
     { value: '44', label: 'Anh DLE' },
     { value: '45', label: 'MLW 5' },
+    { value: '46', label: 'WLF' },
+    { value: '47', label: 'AB-Rüst' },
+    { value: '48', label: 'AB-Atemschutz' },
+    { value: '49', label: 'AB-Öl' },
+    { value: '50', label: 'GruKw' },
+    { value: '51', label: 'FüKw' },
+    { value: '52', label: 'GefKw' },
     { value: '53', label: 'Dekon-P' },
+    { value: '54', label: 'AB-Dekon-P' },
+    { value: '55', label: 'KdoW-LNA' },
+    { value: '56', label: 'KdoW-OrgL' },
     { value: '57', label: 'FwK' },
-    { value: '63', label: 'GW-Taucher' },
+    { value: '58', label: 'KTW Typ B' },
+    { value: '59', label: 'ELW 1 (SEG)' },
+    { value: '60', label: 'GW-San' },
     { value: '61', label: 'Polizeihubschrauber' },
+    { value: '62', label: 'AB-Schlauch' },
+    { value: '63', label: 'GW-Taucher' },
     { value: '64', label: 'GW-Wasserrettung' },
+    { value: '65', label: 'LKW 7 Lkr 19 tm' },
+    { value: '66', label: 'Anh MzB' },
+    { value: '67', label: 'Anh SchlB' },
+    { value: '68', label: 'Anh MzAB' },
+    { value: '69', label: 'Tauchkraftwagen' },
     { value: '70', label: 'MZB' },
+    { value: '71', label: 'AB-MZB' },
+    { value: '72', label: 'WaWe 10' },
+    { value: '73', label: 'GRTW' },
+    { value: '74', label: 'NAW' },
+    { value: '75', label: 'FLF' },
+    { value: '76', label: 'Rettungstreppe' },
+    { value: '77', label: 'AB-Gefahrgut' },
+    { value: '78', label: 'AB-Einsatzleitung' },
+    { value: '79', label: 'SEK – ZF' },
+    { value: '80', label: 'SEK – MTF' },
+    { value: '81', label: 'MEK – ZF' },
+    { value: '82', label: 'MEK – MTF' },
+    { value: '83', label: 'GW-Werkfeuerwehr' },
+    { value: '84', label: 'ULF mit Löscharm' },
+    { value: '85', label: 'TM 50' },
+    { value: '86', label: 'Turbolöscher' },
+    { value: '87', label: 'TLF 4000' },
+    { value: '88', label: 'KLF' },
+    { value: '89', label: 'MLF' },
+    { value: '90', label: 'HLF 10' },
     { value: '91', label: 'Rettungshundefahrzeug' },
-    { value: '99', label: 'LKW 7 Lbw (alt)' },
+    { value: '92', label: 'Anh Hund' },
+    { value: '93', label: 'MTW-O' },
+    { value: '94', label: 'DhuFüKw' },
+    { value: '95', label: 'Polizeimotorrad' },
+    { value: '97', label: 'ITW' },
+    { value: '98', label: 'Zivilstreifenwagen' },
+    { value: '99', label: 'Außenlastbehälter (allg.)' },
     { value: '100', label: 'MLW 4' },
     { value: '101', label: 'Anh SwPu' },
     { value: '102', label: 'Anh 7' },
+    { value: '103', label: 'FuStW (DGL)' },
+    { value: '104', label: 'GW-L1' },
+    { value: '105', label: 'GW-L2' },
+    { value: '106', label: 'MTF-L' },
+    { value: '107', label: 'LF-L' },
+    { value: '108', label: 'AB-L' },
     { value: '109', label: 'MzGW SB' },
+    { value: '110', label: 'NEA50 (THW)' },
+    { value: '111', label: 'NEA50 (FW)' },
+    { value: '112', label: 'NEA200 (THW)' },
+    { value: '113', label: 'NEA200 (FW)' },
+    { value: '114', label: 'GW-Lüfter' },
+    { value: '115', label: 'Anh Lüfter' },
+    { value: '116', label: 'AB-Lüfter' },
+    { value: '117', label: 'AB-Tank' },
+    { value: '118', label: 'Kleintankwagen' },
+    { value: '119', label: 'AB-Lösch' },
+    { value: '120', label: 'Tankwagen' },
+    { value: '121', label: 'GTLF' },
     { value: '122', label: 'LKW 7 Lbw (FGr E)' },
     { value: '123', label: 'LKW 7 Lbw (FGr WP)' },
-    { value: '127', label: 'GW UAS' },
-    { value: '144', label: 'FüKomKW (THW)' },
-    { value: '145', label: 'Anh FüLa' },
-    { value: '146', label: 'FmKw' },
-    { value: '147', label: 'MTW OV' },
-    { value: '51', label: 'FüKw' },
-    { value: '35', label: 'leBefKw' },
-    { value: '72', label: 'WaWe' },
-    { value: '94', label: 'DhuFüKw' },
-    { value: '52', label: 'GefKw' },
+    { value: '124', label: 'MTW-OV' },
+    { value: '125', label: 'MTW-TR UL (Drohne)' },
+    { value: '126', label: 'MTF Drohne' },
+    { value: '127', label: 'GW UAS (Drohnenfahrzeug)' },
+    { value: '128', label: 'ELW 1 Drohne' },
+    { value: '129', label: 'ELW 2 Drohne' },
+    { value: '130', label: 'GW-Bt' },
+    { value: '131', label: 'Bt-Kombi' },
+    { value: '132', label: 'FKH' },
+    { value: '133', label: 'Bt LKW' },
+    { value: '134', label: 'Pferdetransporter klein' },
+    { value: '135', label: 'Pferdetransporter groß' },
+    { value: '136', label: 'Anh Pferdetransport' },
+    { value: '137', label: 'Zugfahrzeug Pferdetransport' },
+    { value: '138', label: 'GW-Verpflegung' },
+    { value: '139', label: 'GW-Küche' },
+    { value: '140', label: 'MTW-Verpflegung' },
+    { value: '141', label: 'FKH' },
+    { value: '142', label: 'AB-Küche' },
+    { value: '143', label: 'Anh Schlauch' },
+    { value: '144', label: 'FüKW (THW)' },
+    { value: '145', label: 'FüKomKW' },
+    { value: '146', label: 'Anh FüLa' },
+    { value: '147', label: 'FmKW' },
+    { value: '148', label: 'MTW-FGr K' },
+    { value: '162', label: 'RW Schiene' },
+    { value: '163', label: 'HLF Schiene' },
+    { value: '164', label: 'AB Schiene' },
+    { value: '165', label: 'LauKW' },
+    { value: '166', label: 'PTLF 4000' },
+    { value: '167', label: 'SLF' },
+    { value: '168', label: 'Anh Sonderlöschmittel' },
+    { value: '169', label: 'AB-Sonderlöschmittel' },
+    { value: '170', label: 'AB-Wasser/Schaum' },
+    { value: '171', label: 'GW TeSi' },
+    { value: '172', label: 'LKW Technik (Notstrom)' },
+    { value: '173', label: 'MTW TeSi' },
+    { value: '174', label: 'Anh TeSi' },
+    { value: '175', label: 'NEA 50' },
   ];
 
   function clamp(n, min, max) {
@@ -236,6 +360,15 @@
   }
 
   if (location.pathname.startsWith('/settings/index')) {
+    if (!document.getElementById('s6-settings-style')) {
+      const settingsStyle = document.createElement('style');
+      settingsStyle.id = 's6-settings-style';
+      settingsStyle.textContent = `
+        body { padding-bottom: 140px !important; }
+        #${SETTINGS_IDENTIFIER} { padding-bottom: 140px !important; }
+      `;
+      document.head.appendChild(settingsStyle);
+    }
 
     await addOptions({
       identifier: SETTINGS_IDENTIFIER,
@@ -251,9 +384,9 @@
           multiple: true,
           options: VEHICLE_OPTIONS.map(o => ({
             value: String(o.value),
-            label: o.label,
-            text: o.label,
-            name: o.label,
+            label: `${o.value} ${o.label}`,
+            text: `${o.value} ${o.label}`,
+            name: `${o.value} ${o.label}`,
           })),
         },
 
@@ -542,13 +675,13 @@
 
     container.style.display = 'flex';
     container.style.margin = '8px 0';
-    container.style.gap = '8px';
+ //   container.style.gap = '8px';
     container.style.alignItems = 'center';
 
     const btnPrev = document.createElement('a');
 
     btnPrev.id = UI.btnPreview;
-    btnPrev.className = 'btn btn-info btn-xs';
+    btnPrev.className = 'btn btn-default btn-xs';
     btnPrev.textContent = 'Vorschau markieren';
 
     btnPrev.addEventListener('click', async () => {
@@ -575,7 +708,7 @@
     const btnStatus6 = document.createElement('a');
 
     btnStatus6.id = UI.btnStatus6;
-    btnStatus6.className = 'btn btn-warning btn-xs';
+    btnStatus6.className = 'btn btn-default btn-xs';
     btnStatus6.textContent = 'Fahrzeuge auf Status 6 setzen';
 
     const btnSettings = document.createElement('a');
