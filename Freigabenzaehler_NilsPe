@@ -1,17 +1,10 @@
 // ==UserScript==
-// @name            [LSS] Own alliance mission count
-// @name:de         [LSS] Freigabenzähler_NilsPe
-// @namespace       https://jxn.lss-manager.de
-// @version         2025.07.27+2353
+// @name            LSS Freigabenzähler
+// @version         2.0
 // @author          Jan (jxn_30) & NilsPe
 // @description     Allows to add diverse counters to the top of the mission list
 // @description:de  Ermöglicht diverse Zähler oben in der Einsatzliste
-// @homepage        https://github.com/jxn-30/LSS-Scripts
-// @homepageURL     https://github.com/jxn-30/LSS-Scripts
 // @icon            https://www.leitstellenspiel.de/favicon.ico
-// @updateURL       https://github.com/jxn-30/LSS-Scripts/raw/master/src/ownAllianceMissionCount.user.js
-// @downloadURL     https://github.com/jxn-30/LSS-Scripts/raw/master/src/ownAllianceMissionCount.user.js
-// @supportURL      https://forum.leitstellenspiel.de/index.php?thread/16843-script-ownalliancemissioncount/
 // @match           https://www.leitstellenspiel.de/
 // @run-at          document-idle
 // @grant           GM_getValue
