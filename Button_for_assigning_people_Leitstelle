@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Leitstelle Assing Personal
+// @name         Leitstelle Assign Personal
 // @namespace    NilsPe.assign.people
-// @version      2.2.0
-// @description  Weist allen Fahrzeugen automatisch passendes Personal zu. Mit zentraler Einstellungsseite (Ziel-Besatzung je Fahrzeugtyp), Fortschrittsbalken sowie Settings-Seite
+// @version      2.3.0
+// @description  Weist Fahrzeugen automatisch passendes Personal zu. Optimiert ohne /api/v2/vehicles pro Fahrzeug.
 // @author       Kruemmel & NilsPe
 // @match        https://*.leitstellenspiel.de/buildings/*
 // @match        https://*.leitstellenspiel.de/settings/index*
@@ -122,20 +122,22 @@
   // Settings-Keys
   // ————————————————————————————————————————
   const SETTINGS_IDENTIFIER = 'assign_people_settings';
-  const KEY_PREFIX = 'aps_target_';           // Ziel-Besatzung je Fahrzeugtyp
+  const KEY_PREFIX = 'aps_target_';
   const KEY_DELAY_PERSON = 'aps_delay_person';
   const KEY_DELAY_VEHICLE = 'aps_delay_vehicle';
+  const KEY_SKIP_FULL = 'aps_skip_full_vehicles';
   const DEFAULT_DELAY_PERSON = 100;
   const DEFAULT_DELAY_VEHICLE = 100;
 
+  const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
   // ————————————————————————————————————————
-  // Einstellungsseite (Gruppierung per ORG_FOR_ID)
+  // Einstellungsseite
   // ————————————————————————————————————————
   if (location.pathname.startsWith('/settings/index')) {
-    // 1) Delays
     await addOptions({
       identifier: SETTINGS_IDENTIFIER,
-      title: 'Assing Personal',
+      title: 'Assign Personal',
       settings: [
         { type: 'header', text: 'Ablauf' },
         {
@@ -153,6 +155,12 @@
           min: 0,
           max: 5000,
           label: 'Delay je Fahrzeug [ms]'
+        },
+        {
+          type: 'checkbox',
+          key: KEY_SKIP_FULL,
+          default: true,
+          label: 'Fahrzeuge überspringen, die in der Tabelle bereits voll besetzt wirken'
         }
       ]
     });
@@ -173,102 +181,22 @@
       'THW'
     ];
 
-    // Zuordnung Fahrzeugtyp → Organisation
     const ORG_FOR_ID = {
-      // Feuerwehr
-      53: 'Feuerwehr',
-      2: 'Feuerwehr',
-      34: 'Feuerwehr',
-      57: 'Feuerwehr',
-      121: 'Feuerwehr',
-      5: 'Feuerwehr',
-      27: 'Feuerwehr',
-      33: 'Feuerwehr',
-      104: 'Feuerwehr',
-      105: 'Feuerwehr',
-      114: 'Feuerwehr',
-      12: 'Feuerwehr',
-      138: 'Feuerwehr',
-      139: 'Feuerwehr',
-      30: 'Feuerwehr',
-      111: 'Feuerwehr',
-      113: 'Feuerwehr',
-      14: 'Feuerwehr',
-
-      // Rettungsdienst
-      55: 'Rettungsdienst',
-      56: 'Rettungsdienst',
-      38: 'Rettungsdienst',
-      29: 'Rettungsdienst',
-      74: 'Rettungsdienst',
-      28: 'Rettungsdienst',
-
-      // SEG
-      174: 'SEG',
-      133: 'SEG',
-      131: 'SEG',
-      59: 'SEG',
-      132: 'SEG',
-      130: 'SEG',
-      171: 'SEG',
-      127: 'SEG',
-      173: 'SEG',
-      175: 'SEG',
-
-      // Rettungshubschrauber
+      53: 'Feuerwehr', 2: 'Feuerwehr', 34: 'Feuerwehr', 57: 'Feuerwehr', 121: 'Feuerwehr', 5: 'Feuerwehr', 27: 'Feuerwehr', 33: 'Feuerwehr',
+      104: 'Feuerwehr', 105: 'Feuerwehr', 114: 'Feuerwehr', 12: 'Feuerwehr', 138: 'Feuerwehr', 139: 'Feuerwehr', 30: 'Feuerwehr',
+      111: 'Feuerwehr', 113: 'Feuerwehr', 14: 'Feuerwehr',
+      55: 'Rettungsdienst', 56: 'Rettungsdienst', 38: 'Rettungsdienst', 29: 'Rettungsdienst', 74: 'Rettungsdienst', 28: 'Rettungsdienst',
+      174: 'SEG', 133: 'SEG', 131: 'SEG', 59: 'SEG', 132: 'SEG', 130: 'SEG', 171: 'SEG', 127: 'SEG', 173: 'SEG', 175: 'SEG',
       31: 'Rettungshubschrauber',
-
-      // Rettungshundestaffel
       91: 'Rettungshundestaffel',
-
-      // Wasserrettung
-      63: 'Wasserrettung',
-      64: 'Wasserrettung',
-      70: 'Wasserrettung',
-
-      // Polizei
-      94: 'Polizei',
-      32: 'Polizei',
-      103: 'Polizei',
-      52: 'Polizei',
-      95: 'Polizei',
-      98: 'Polizei',
-
-      // Bereitschaftspolizei
-      50: 'Bereitschaftspolizei',
-      51: 'Bereitschaftspolizei',
-      165: 'Bereitschaftspolizei',
-      35: 'Bereitschaftspolizei',
-      72: 'Bereitschaftspolizei',
-
-      // Polizeihubschrauber
+      63: 'Wasserrettung', 64: 'Wasserrettung', 70: 'Wasserrettung',
+      94: 'Polizei', 32: 'Polizei', 103: 'Polizei', 52: 'Polizei', 95: 'Polizei', 98: 'Polizei',
+      50: 'Bereitschaftspolizei', 51: 'Bereitschaftspolizei', 165: 'Bereitschaftspolizei', 35: 'Bereitschaftspolizei', 72: 'Bereitschaftspolizei',
       61: 'Polizeihubschrauber',
-
-      // THW
-      102: 'THW',
-      44: 'THW',
-      146: 'THW',
-      66: 'THW',
-      101: 'THW',
-      43: 'THW',
-      147: 'THW',
-      39: 'THW',
-      100: 'THW',
-      45: 'THW',
-      40: 'THW',
-      41: 'THW',
-      109: 'THW',
-      110: 'THW',
-      112: 'THW',
-      122: 'THW',
-      123: 'THW',
-      42: 'THW',
-      172: 'THW',
-      144: 'THW',
-      145: 'THW',
+      102: 'THW', 44: 'THW', 146: 'THW', 66: 'THW', 101: 'THW', 43: 'THW', 147: 'THW', 39: 'THW', 100: 'THW', 45: 'THW',
+      40: 'THW', 41: 'THW', 109: 'THW', 110: 'THW', 112: 'THW', 122: 'THW', 123: 'THW', 42: 'THW', 172: 'THW', 144: 'THW', 145: 'THW',
     };
 
-    // Gruppen befüllen, doppelte IDs entfernen
     const groups = new Map();
     ORG_ORDER.forEach(org => groups.set(org, []));
     const seenIds = new Set();
@@ -282,16 +210,15 @@
       groups.get(org).push(t);
     }
 
-    // innerhalb der Gruppen alphabetisch
     for (const org of ORG_ORDER) {
       const arr = groups.get(org);
       if (arr) arr.sort((a, b) => a.label.localeCompare(b.label, 'de'));
     }
 
-    // Container wie beim Autobuy-Script
     const vehiclesSection = document.createElement('div');
     vehiclesSection.style.marginBottom = '20px';
     vehiclesSection.style.marginLeft = '15px';
+    vehiclesSection.style.paddingBottom = '140px';
 
     const mainHeader = document.createElement('h3');
     mainHeader.textContent = 'Ziel-Besatzung je Fahrzeugtyp';
@@ -351,30 +278,22 @@
 
         fieldWrap.appendChild(input);
         row.appendChild(fieldWrap);
-
         inputs.push(input);
       }
 
       vehiclesSection.appendChild(wrapper);
     }
 
-    // Gruppen in definierter Reihenfolge aufbauen
-    for (const org of ORG_ORDER) {
-      createOrgRow(org, groups.get(org));
-    }
+    for (const org of ORG_ORDER) createOrgRow(org, groups.get(org));
 
-    // Werte aus GM laden
-    await Promise.all(
-      inputs.map(async (input) => {
-        const vid = input.dataset.vehicleId;
-        const key = KEY_PREFIX + vid;
-        const stored = await GM_getValue(key, 0);
-        const num = Number(stored ?? 0);
-        input.value = num > 0 ? String(num) : '';
-      })
-    );
+    await Promise.all(inputs.map(async (input) => {
+      const vid = input.dataset.vehicleId;
+      const key = KEY_PREFIX + vid;
+      const stored = await GM_getValue(key, 0);
+      const num = Number(stored ?? 0);
+      input.value = num > 0 ? String(num) : '';
+    }));
 
-    // Speichern bei Änderung
     const handleChange = async (e) => {
       const input = e.target;
       const vid = input.dataset.vehicleId;
@@ -387,7 +306,6 @@
     };
 
     inputs.forEach(inp => inp.addEventListener('change', handleChange));
-
     return;
   }
 
@@ -448,7 +366,7 @@
     if (document.getElementById('assignAllPersonnel')) return;
 
     const btn = document.createElement('a');
-    btn.className = 'btn btn-primary btn-xs';
+    btn.className = 'btn btn-default btn-xs';
     btn.id = 'assignAllPersonnel';
     btn.textContent = 'Personal zuweisen';
 
@@ -459,20 +377,14 @@
     const cog = document.createElement('span'); cog.className = 'glyphicon glyphicon-cog'; cog.title = 'Einstellungen';
     settingsBtn.appendChild(cog);
 
-    const status = document.createElement('div');
-    status.id = 'assignStatus';
-    status.style.marginTop = '5px';
-    status.style.fontWeight = 'bold';
-
     const wrapper = document.createElement('div');
-    wrapper.style.display = 'block';
+    wrapper.className = 'btn-group';
     wrapper.style.marginBottom = '6px';
 
     wrapper.appendChild(btn);
     wrapper.appendChild(settingsBtn);
 
     table.parentNode.insertBefore(wrapper, table);
-    table.parentNode.insertBefore(status, table.nextSibling);
 
     btn.addEventListener('click', () => {
       btn.classList.add('disabled');
@@ -496,6 +408,13 @@
   function getVehicleTypeIDFromRow(tr) {
     return Number(tr.querySelector('td img')?.getAttribute('vehicle_type_id') || 0);
   }
+  function parseCrewFromRow(tr) {
+    const text = tr.textContent || '';
+    const matches = [...text.matchAll(/(\d+)\s*\/\s*(\d+)/g)];
+    if (!matches.length) return null;
+    const last = matches[matches.length - 1];
+    return { current: Number(last[1]), max: Number(last[2]) };
+  }
 
   // ————————————————————————————————————————
   // Cache: Ziel-Besatzungen + Delays
@@ -503,12 +422,15 @@
   let TARGETS_CACHE = null;
   let DELAY_PERSON = DEFAULT_DELAY_PERSON;
   let DELAY_VEHICLE = DEFAULT_DELAY_VEHICLE;
+  let SKIP_FULL = true;
 
   async function primeCache(rows) {
     const rawP = await GM_getValue(KEY_DELAY_PERSON);
     const rawV = await GM_getValue(KEY_DELAY_VEHICLE);
+    const rawSkip = await GM_getValue(KEY_SKIP_FULL, true);
     DELAY_PERSON = Number(rawP ?? DEFAULT_DELAY_PERSON) || 0;
     DELAY_VEHICLE = Number(rawV ?? DEFAULT_DELAY_VEHICLE) || 0;
+    SKIP_FULL = rawSkip !== false && rawSkip !== 'false';
 
     const typeIds = Array.from(new Set(rows.map(getVehicleTypeIDFromRow)));
     const values = await Promise.all(typeIds.map(id => GM_getValue(KEY_PREFIX + String(id))));
@@ -516,8 +438,6 @@
     typeIds.forEach((id, i) => TARGETS_CACHE.set(id, Number(values[i] ?? 0) || 0));
   }
   const getTargetForType = (typeId) => TARGETS_CACHE?.get(typeId) || 0;
-
-  const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
   // ————————————————————————————————————————
   // Kernlogik
@@ -529,15 +449,19 @@
     createNavbar();
     setState('Starte…', 'info');
 
-    const jobs = rows.map(tr => ({
-      vehicleId: getVehicleID(tr),
-      typeId: getVehicleTypeIDFromRow(tr),
-    })).filter(j => j.vehicleId);
+    const jobs = rows.map(tr => {
+      const vehicleId = getVehicleID(tr);
+      const typeId = getVehicleTypeIDFromRow(tr);
+      const crew = parseCrewFromRow(tr);
+      return { vehicleId, typeId, crew };
+    }).filter(j => j.vehicleId && j.typeId);
 
     const filtered = [];
     for (const j of jobs) {
       const wanted = getTargetForType(j.typeId);
-      if (wanted > 0) filtered.push({ ...j, wanted });
+      if (wanted <= 0) continue;
+      if (SKIP_FULL && j.crew && j.crew.current >= wanted) continue;
+      filtered.push({ ...j, wanted });
     }
 
     const total = filtered.length;
@@ -545,7 +469,7 @@
     updateProgress(sent, total);
 
     for (const job of filtered) {
-      await assignVehicle(job.vehicleId, job.wanted);
+      await assignVehicle(job.vehicleId, job.typeId, job.wanted);
       sent++;
       updateProgress(sent, total);
       if (DELAY_VEHICLE > 0) await delay(DELAY_VEHICLE);
@@ -674,19 +598,9 @@
     }
   }
 
-  async function assignVehicle(vehicleId, wanted) {
-    let vehicleTypeId = null;
-    try {
-      const vresp = await fetch(`/api/v2/vehicles/${vehicleId}`, { credentials: 'same-origin' });
-      if (!vresp.ok) throw new Error('Vehicle API nicht erreichbar: ' + vresp.status);
-      const vjson = await vresp.json();
-      vehicleTypeId = vjson.result && vjson.result.vehicle_type;
-    } catch (e) {
-      return;
-    }
-
-    const identifier = getIdentifierByVehicleTypeId(vehicleTypeId);
-    const csrf = document.querySelector("meta[name=csrf-token]")?.content || '';
+  async function assignVehicle(vehicleId, vehicleTypeId, wanted) {
+    const identifier = getIdentifierByVehicleTypeId(Number(vehicleTypeId));
+    const csrf = document.querySelector('meta[name=csrf-token]')?.content || '';
     const headers = {
       'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
       'x-csrf-token': csrf,
@@ -694,7 +608,6 @@
     };
 
     let doc = await fetchAssignDoc(vehicleId);
-    let { cap } = parseCap(doc);
     let { boundMatchingRows, candidateRows } = collectRows(doc, identifier);
     let assignedMatching = boundMatchingRows.length;
 
@@ -708,11 +621,8 @@
           const r = await fetch(delLink.href, { method: 'POST', headers, credentials: 'same-origin' });
           if (r.ok) {
             toRemove--;
+            assignedMatching--;
             if (DELAY_PERSON > 0) await delay(DELAY_PERSON);
-            doc = await fetchAssignDoc(vehicleId);
-            ({ cap } = parseCap(doc));
-            ({ boundMatchingRows, candidateRows } = collectRows(doc, identifier));
-            assignedMatching = boundMatchingRows.length;
           }
         } catch { /* noop */ }
       }
@@ -735,11 +645,8 @@
         }
         if (ok) {
           need--;
+          assignedMatching++;
           if (DELAY_PERSON > 0) await delay(DELAY_PERSON);
-          doc = await fetchAssignDoc(vehicleId);
-          ({ cap } = parseCap(doc));
-          ({ boundMatchingRows, candidateRows } = collectRows(doc, identifier));
-          assignedMatching = boundMatchingRows.length;
         }
       }
     }
