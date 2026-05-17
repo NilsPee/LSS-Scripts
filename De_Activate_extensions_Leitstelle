@@ -1,170 +1,399 @@
 // ==UserScript==
 // @name         Leitstelle De-/Activate Extensions
-// @namespace    http://tampermonkey.net/
-// @version      2.5.0
-// @description  (De)aktiviert Erweiterungen Leitstellenweise, bearbeitet nur Erweiterungen die in config konfiguriert wurden
+// @namespace    NilsPe.activate.extensions.api
+// @version      3.1.1
+// @description  (De)aktiviert Erweiterungen leitstellenweise über API-Speicher / IndexedDB mit Einstellungsseite
 // @author       Silberfighter & NilsPe
-// @match        https://www.leitstellenspiel.de/buildings*
-// @grant        none
+// @match        https://www.leitstellenspiel.de/buildings/*
+// @match        https://www.leitstellenspiel.de/settings/index*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @require      https://update.greasyfork.org/scripts/528065/Skripteinstellungen.user.js
+// @require      https://update.greasyfork.org/scripts/516844/API-Speicher.user.js
 // ==/UserScript==
 
-(function () {
+(async function () {
   'use strict';
 
-  //konfiguration des/der Button(s)
-  const config = [
-    {
-      label: "Erweiterungen aktivieren",
-      keywords: [
-        "1. Technischer Zug: Fachgruppe Notversorgung/Notinstandsetzung",
-        "1. Technischer Zug: Zugtrupp",
-        "Fachgruppe Räumen",
-        "Fachgruppe Wasserschaden/Pumpen",
-        "Fachgruppe Schwere Bergung",
-        "Fachzug Führung und Kommunikation",
-        "2. Technischer Zug - Bergungsgruppe"
-      ],
-      action: "aktivieren",
-      color: "success"
-    },
-    // Beispiel für Deaktivieren:
-     {
-       label: "Erweiterungen deaktivieren",
-       keywords: [
-        "1. Technischer Zug: Fachgruppe Notversorgung/Notinstandsetzung",
-        "1. Technischer Zug: Zugtrupp",
-        "Fachgruppe Räumen",
-        "Fachgruppe Wasserschaden/Pumpen",
-        "Fachgruppe Schwere Bergung",
-        "Fachzug Führung und Kommunikation",
-        "2. Technischer Zug - Bergungsgruppe"
-  ],
-       action: "deaktivieren",
-       color: "danger"
-     }
+  const SETTINGS_IDENTIFIER = 'activate_extensions_api';
+  const KEY_ACTIVATE_PREFIX = 'ae_activate_type_';
+  const KEY_DEACTIVATE_PREFIX = 'ae_deactivate_type_';
+  const KEY_DELAY_PER_ACTION = 'ae_delay_per_action';
+  const KEY_DELAY_PER_BUILDING = 'ae_delay_per_building';
+  const DEFAULT_DELAY_PER_ACTION = 200;
+  const DEFAULT_DELAY_PER_BUILDING = 100;
+
+  const BUILDING_TYPES = [
+    { id: 0, label: 'Feuerwache' },
+    { id: 2, label: 'Rettungswache' },
+    { id: 4, label: 'Krankenhaus' },
+    { id: 5, label: 'Rettungshubschrauber-Station' },
+    { id: 6, label: 'Polizeiwache' },
+    { id: 8, label: 'Polizeischule' },
+    { id: 9, label: 'THW-Ortsverband' },
+    { id: 11, label: 'Bereitschaftspolizei' },
+    { id: 12, label: 'Schnelleinsatzgruppe' },
+    { id: 13, label: 'Polizeihubschrauberstation' },
+    { id: 15, label: 'Wasserrettung' },
+    { id: 16, label: 'Polizeizellen' },
+    { id: 18, label: 'Feuerwache (Kleinwache)' },
+    { id: 19, label: 'Polizeiwache (Kleinwache)' },
+    { id: 20, label: 'Rettungswache (Kleinwache)' },
+    { id: 21, label: 'Rettungshunde' },
   ];
 
-  //Hilfsfunktionen
-  const delay = (ms) => new Promise(r => setTimeout(r, ms));
-  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
-  const getCsrf = () => document.querySelector('meta[name="csrf-token"]')?.content || "";
-  const btnTxt = el => ((el?.textContent) || '').toLowerCase().replace(/\s+/g,' ').trim();
+  const EXT_OPTIONS_BY_TYPE = {
+    0: [
+      [0, 'Rettungsdienst'], [1, 'Abrollbehälter 1'], [2, 'Abrollbehälter 2'], [3, 'Abrollbehälter 3'], [4, 'Abrollbehälter 4'],
+      [5, 'Abrollbehälter 5'], [7, 'Abrollbehälter 7'], [10, 'Abrollbehälter 10'], [11, 'Abrollbehälter 11'],
+      [12, 'Abrollbehälter 12'], [17, 'Abrollbehälter 17'], [6, 'Wasserrettung'], [8, 'Flughafen'], [13, 'Werkfeuerwehr'],
+      [14, 'NEA50'], [15, 'NEA200'], [16, 'Lüfter'], [18, 'Drohnen-Erweiterung'], [19, 'Verpflegungsdienst'],
+      [20, 'Anhänger-Stellplatz 1'], [21, 'Anhänger-Stellplatz 2'], [22, 'Anhänger-Stellplatz 3'], [23, 'Anhänger-Stellplatz 4'],
+      [24, 'Anhänger-Stellplatz 5'], [25, 'Bahnrettung'], [9, 'Großwache']
+    ],
+    18: [
+      [0, 'Rettungsdienst'], [1, 'Abrollbehälter 1'], [2, 'Abrollbehälter 2'], [3, 'Abrollbehälter 3'], [4, 'Abrollbehälter 4'],
+      [5, 'Abrollbehälter 5'], [7, 'Abrollbehälter 7'], [10, 'Abrollbehälter 10'], [11, 'Abrollbehälter 11'],
+      [12, 'Abrollbehälter 12'], [17, 'Abrollbehälter 17'], [6, 'Wasserrettung'], [8, 'Flughafen'], [13, 'Werkfeuerwehr'],
+      [14, 'NEA50'], [15, 'NEA200'], [16, 'Lüfter'], [18, 'Drohnen-Erweiterung'], [19, 'Verpflegungsdienst'],
+      [20, 'Anhänger-Stellplatz 1'], [21, 'Anhänger-Stellplatz 2'], [22, 'Anhänger-Stellplatz 3'], [23, 'Anhänger-Stellplatz 4'],
+      [24, 'Anhänger-Stellplatz 5'], [25, 'Bahnrettung'], [9, 'Großwache']
+    ],
+    6: [
+      [0, 'Zelle 1'], [1, 'Zelle 2'], [2, 'Zelle 3'], [3, 'Zelle 4'], [4, 'Zelle 5'], [5, 'Zelle 6'], [6, 'Zelle 7'],
+      [7, 'Zelle 8'], [8, 'Zelle 9'], [9, 'Zelle 10'], [10, 'Diensthundestaffel'], [11, 'Kriminalpolizei'],
+      [12, 'Dienstgruppenleitung'], [13, 'Motorradstaffel'], [14, 'Großwache'], [15, 'Großgewahrsam']
+    ],
+    19: [
+      [0, 'Zelle 1'], [1, 'Zelle 2'], [2, 'Zelle 3'], [3, 'Zelle 4'], [4, 'Zelle 5'], [5, 'Zelle 6'], [6, 'Zelle 7'],
+      [7, 'Zelle 8'], [8, 'Zelle 9'], [9, 'Zelle 10'], [10, 'Diensthundestaffel'], [11, 'Kriminalpolizei'],
+      [12, 'Dienstgruppenleitung'], [13, 'Motorradstaffel'], [14, 'Großwache'], [15, 'Großgewahrsam']
+    ],
+    16: [[0, 'Zelle 1'], [1, 'Zelle 2'], [2, 'Zelle 3'], [3, 'Zelle 4'], [4, 'Zelle 5'], [5, 'Zelle 6'], [6, 'Zelle 7'], [7, 'Zelle 8'], [8, 'Zelle 9'], [9, 'Zelle 10']],
+    11: [
+      [0, '2. Zug der 1. Hundertschaft'], [1, '3. Zug der 1. Hundertschaft'], [2, 'Sonderfahrzeug: Gefangenenkraftwagen'],
+      [3, 'Technischer Zug: Wasserwerfer'], [4, 'SEK: 1. Zug'], [5, 'SEK: 2. Zug'], [6, 'MEK: 1. Zug'],
+      [7, 'MEK: 2. Zug'], [8, 'Diensthundestaffel'], [9, 'Reiterstaffel'], [10, 'LauKW']
+    ],
+    9: [
+      [0, '1. TZ: FGr Notversorgung/Notinstandsetzung'], [1, '1. TZ: Zugtrupp'], [4, '2. TZ – Grundvoraussetzungen'],
+      [5, '2. TZ: FGr Notversorgung/Notinstandsetzung'], [6, '2. TZ: Zugtrupp'], [2, 'Fachgruppe Räumen'],
+      [3, 'Fachgruppe Wassergefahren'], [7, 'Fachgruppe Ortung'], [8, 'Fachgruppe Wasserschaden/Pumpen'],
+      [9, 'Fachgruppe schwere Bergung'], [10, 'Fachgruppe Elektroversorgung'], [11, 'Ortsverbands-Mannschaftstransportwagen'],
+      [12, 'Trupp Unbemannte Luftfahrtsysteme'], [13, 'Fachzug Führung und Kommunikation'], [14, 'Fachgruppe Logistik-Verpflegung']
+    ],
+    4: [[0, 'Allgemeine Innere'], [1, 'Allgemeine Chirurgie'], [2, 'Gynäkologie'], [3, 'Urologie'], [4, 'Unfallchirurgie'], [5, 'Neurologie'], [6, 'Neurochirurgie'], [7, 'Kardiologie'], [8, 'Kardiochirurgie'], [9, 'Großkrankenhaus']],
+    12: [[0, 'Führung'], [1, 'Sanitätsdienst'], [2, 'Wasserrettungs-Erweiterung'], [3, 'Rettungshundestaffel'], [4, 'SEG Drohne'], [5, 'Betreuungs- und Verpflegungsdienst'], [6, 'SEG Technik und Sicherheit']],
+  };
 
+  for (const [type, list] of Object.entries(EXT_OPTIONS_BY_TYPE)) {
+    EXT_OPTIONS_BY_TYPE[type] = list.map(([value, label]) => ({ value: String(value), label }));
+  }
+
+  const GENERIC_OPTIONS = Array.from({ length: 26 }, (_, i) => ({ value: String(i), label: `Erweiterung ${i}` }));
+
+  const delay = ms => new Promise(r => setTimeout(r, ms));
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const getCsrf = () => document.querySelector('meta[name="csrf-token"]')?.content || '';
+
+  function getBuildingIdFromUrl() { return Number(location.pathname.split('/').filter(Boolean).pop()); }
+  function getBuildingCaption(building) { return building.caption || building.name || `Gebäude ${building.id}`; }
+  function normalizeApiBuilding(building) {
+    return {
+      ...building,
+      id: Number(building.id),
+      name: getBuildingCaption(building),
+      type: Number(building.building_type),
+      building_type: Number(building.building_type),
+      leitstelle_building_id: building.leitstelle_building_id == null ? null : Number(building.leitstelle_building_id),
+      extensions: Array.isArray(building.extensions) ? building.extensions : []
+    };
+  }
+  function parseStoredIds(raw) {
+    if (!raw) return [];
+    try {
+      const v = JSON.parse(raw);
+      if (Array.isArray(v)) return v.map(x => parseInt(x, 10)).filter(Number.isInteger);
+    } catch {}
+    return String(raw).split(/[,\s;]+/).map(x => parseInt(x, 10)).filter(Number.isInteger);
+  }
+  function getOptionsForType(typeId) { return EXT_OPTIONS_BY_TYPE[Number(typeId)] || GENERIC_OPTIONS; }
+  function getLabelByTypeAndId(typeId, extensionId) {
+    return getOptionsForType(typeId).find(o => Number(o.value) === Number(extensionId))?.label || `Erweiterung ${extensionId}`;
+  }
+  async function getConfiguredDelays() {
+    return {
+      action: Number(await GM_getValue(KEY_DELAY_PER_ACTION, DEFAULT_DELAY_PER_ACTION)) || DEFAULT_DELAY_PER_ACTION,
+      building: Number(await GM_getValue(KEY_DELAY_PER_BUILDING, DEFAULT_DELAY_PER_BUILDING)) || DEFAULT_DELAY_PER_BUILDING
+    };
+  }
+  async function getSelectedIdsForType(typeId, action) {
+    const prefix = action === 'aktivieren' ? KEY_ACTIVATE_PREFIX : KEY_DEACTIVATE_PREFIX;
+    return parseStoredIds(await GM_getValue(prefix + String(typeId), '[]'));
+  }
+
+  if (location.pathname.startsWith('/settings/index')) {
+    if (!document.getElementById('ae-settings-style')) {
+      const s = document.createElement('style');
+      s.id = 'ae-settings-style';
+      s.textContent = `body { padding-bottom: 140px !important; } #${SETTINGS_IDENTIFIER} { padding-bottom: 140px !important; }`;
+      document.head.appendChild(s);
+    }
+
+    const makeSelects = (prefix, suffix, title) => BUILDING_TYPES.map(t => ({
+      type: 'select',
+      key: prefix + t.id,
+      label: `${t.id} ${t.label} – ${suffix}`,
+      title,
+      multiple: true,
+      options: getOptionsForType(t.id).map(o => ({ value: String(o.value), label: o.label, text: o.label, name: o.label }))
+    }));
+
+    await addOptions({
+      identifier: SETTINGS_IDENTIFIER,
+      title: 'De-/Activate Extensions',
+      settings: [
+        { type: 'header', text: 'Erweiterungen aktivieren' },
+        ...makeSelects(KEY_ACTIVATE_PREFIX, 'aktivieren', 'Diese Erweiterungen auf einsatzbereit setzen'),
+        { type: 'header', text: 'Erweiterungen deaktivieren' },
+        ...makeSelects(KEY_DEACTIVATE_PREFIX, 'deaktivieren', 'Diese Erweiterungen auf nicht einsatzbereit setzen'),
+        { type: 'header', text: 'Ablauf / Delays' },
+        { type: 'number', key: KEY_DELAY_PER_ACTION, default: DEFAULT_DELAY_PER_ACTION, min: 0, max: 5000, label: 'Delay pro Umschaltung [ms]' },
+        { type: 'number', key: KEY_DELAY_PER_BUILDING, default: DEFAULT_DELAY_PER_BUILDING, min: 0, max: 5000, label: 'Delay pro Gebäude [ms]' }
+      ]
+    });
+
+    const panel = document.getElementById(SETTINGS_IDENTIFIER);
+    if (!panel) return;
+
+    async function initSelect(key, labelTextStart) {
+      const formGroups = panel.querySelectorAll('.form-group, .setting, div');
+      let select = null;
+      for (const fg of formGroups) {
+        const label = fg.querySelector('label');
+        if (!label) continue;
+        if (!label.textContent.trim().startsWith(labelTextStart)) continue;
+        const s = fg.querySelector('select[multiple]');
+        if (s) { select = s; break; }
+      }
+      if (!select) return;
+      const selectedIds = parseStoredIds(await GM_getValue(key, '[]'));
+      for (const opt of select.options) opt.selected = selectedIds.includes(parseInt(opt.value, 10));
+      select.dispatchEvent(new Event('change'));
+      select.addEventListener('change', async () => {
+        const vals = Array.from(select.selectedOptions).map(o => parseInt(o.value, 10)).filter(Number.isInteger);
+        await GM_setValue(key, JSON.stringify(vals));
+      });
+    }
+
+    for (const t of BUILDING_TYPES) {
+      await initSelect(KEY_ACTIVATE_PREFIX + t.id, `${t.id} ${t.label} – aktivieren`);
+      await initSelect(KEY_DEACTIVATE_PREFIX + t.id, `${t.id} ${t.label} – deaktivieren`);
+    }
+    return;
+  }
+
+  async function loadApiBuildingsFromCache(maxAgeSeconds = 60) {
+    if (typeof openDb !== 'function' || typeof updateBuildings !== 'function') throw new Error('API-Speicher ist nicht verfügbar.');
+    const db = await openDb();
+    await updateBuildings(db, maxAgeSeconds);
+    const tryLoaders = [
+      async () => typeof getDataByIndex === 'function' ? await getDataByIndex(db, 'buildings', 'building_type', IDBKeyRange.bound(0, 999)) : null,
+      async () => typeof getDataByIndex === 'function' ? await getDataByIndex(db, 'buildings', 'building_type', IDBKeyRange.lowerBound(0)) : null,
+      async () => typeof getAllData === 'function' ? await getAllData(db, 'buildings') : null,
+      async () => typeof getData === 'function' ? await getData(db, 'buildings') : null,
+      async () => await new Promise((resolve, reject) => {
+        const req = db.transaction('buildings', 'readonly').objectStore('buildings').getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error || new Error('IndexedDB Fehler'));
+      })
+    ];
+    let lastError = null;
+    for (const loader of tryLoaders) {
+      try {
+        const data = await loader();
+        if (Array.isArray(data)) return data.map(normalizeApiBuilding);
+      } catch (e) { lastError = e; }
+    }
+    throw lastError || new Error('Keine Gebäude geladen');
+  }
+  async function getBuildingsOfLeitstelle(leitstellenId) {
+    const allBuildings = await loadApiBuildingsFromCache(60);
+    return allBuildings.filter(b => b.leitstelle_building_id === Number(leitstellenId)).sort((a, b) => a.id - b.id);
+  }
+
+  async function fetchExtensionsForBuilding(buildingId) {
+    const res = await fetch(`/buildings/${buildingId}`, { credentials: 'same-origin' });
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const container = doc.querySelector('#tab_extensions') || doc;
+
+    return Array.from(container.querySelectorAll('tr')).map(row => {
+      const firstTd = row.querySelector('td');
+      const link = row.querySelector('a.btn[data-method="post"][href*="/extension_ready/"]');
+      if (!firstTd || !link) return null;
+      return { text: norm(firstTd.innerText), buttonText: norm(link.textContent), href: link.href };
+    }).filter(Boolean);
+  }
 
   async function postWithCsrf(url) {
     const csrf = getCsrf();
-    const body = new URLSearchParams({
-      "_method": "post",
-      "authenticity_token": csrf
-    }).toString();
-
     const res = await fetch(url, {
-      method: "POST",
-      credentials: "same-origin",
+      method: 'POST',
+      credentials: 'same-origin',
       headers: {
-        "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "x-requested-with": "XMLHttpRequest",
-        "x-csrf-token": csrf
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'x-requested-with': 'XMLHttpRequest',
+        'x-csrf-token': csrf
       },
-      body
+      body: new URLSearchParams({ _method: 'post', authenticity_token: csrf }).toString()
     });
-
     return res.ok;
   }
 
-  function addButtonsIfMissing() {
-    const tab = document.querySelector('#tab_extensions');
-    if (!tab) return;
-    const table = tab.querySelector('table');
-    if (!table) return;
-
-    if (tab.querySelector('.ext-control-container')) return;
-
-    const container = document.createElement('div');
-    container.className = 'ext-control-container';
-    container.style.margin = '10px 0';
-
-    config.forEach(cfg => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = cfg.label;
-      btn.className = `btn btn-${cfg.color} btn-xs`;
-      btn.style.marginRight = '8px';
-
-      const status = document.createElement('span');
-      status.style.marginLeft = '6px';
-      status.style.fontWeight = 'bold';
-
-      const kw = cfg.keywords.map(norm);
-
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        status.style.color = 'white';
-
-        const rows = Array.from(table.querySelectorAll('tr')).filter(row => {
-          const firstTd = row.querySelector('td');
-          if (!firstTd) return false;
-          const text = norm(firstTd.innerText);
-          return kw.some(k => text.includes(k));
-        });
-
-        //Nur die Erweiterungen, die geändert werden müssen werden ausgewählt
-          const toChange = rows.filter(row => {
-              const link = row.querySelector('a.btn[data-method="post"][href*="/extension_ready/"]');
-              if (!link) return false;
-              const t = btnTxt(link); // "einsatzbereit" oder "nicht einsatzbereit"
-              return (cfg.action === "aktivieren" && t === "einsatzbereit") ||
-                  (cfg.action === "deaktivieren" && t === "nicht einsatzbereit");
-          });
-
-
-        const total = toChange.length;
-        let done = 0;
-
-        if (total === 0) {
-          status.textContent = "Alles bereits im gewünschten Zustand";
-          status.style.color = 'green';
-          btn.disabled = false;
-          return;
-        }
-
-        status.textContent = `0 / ${total} … läuft`;
-
-          for (const row of toChange) {
-              const link = row.querySelector('a.btn[data-method="post"][href*="/extension_ready/"]');
-              if (!link) continue;
-
-              const t = btnTxt(link);
-              const shouldClick =
-                    (cfg.action === "aktivieren" && t === "einsatzbereit") ||
-                    (cfg.action === "deaktivieren" && t === "nicht einsatzbereit");
-              if (!shouldClick) continue;
-
-              try {
-                  const ok = await postWithCsrf(link.href);
-                  if (ok) done++;
-              } catch (e) {
-                  console.warn("POST fehlgeschlagen:", link?.href, e);
-              }
-
-              status.textContent = `${done} / ${total} … läuft`;
-              await delay(200);
-          }
-
-
-        status.textContent = `✔ Fertig (${done} / ${total})`;
-        status.style.color = 'green';
-        btn.disabled = false;
-      });
-
-      container.appendChild(btn);
-      container.appendChild(status);
-      container.appendChild(document.createElement('br'));
-    });
-
-    table.parentNode.insertBefore(container, table);
+  function ensureStyles() {
+    if (document.getElementById('ae-style')) return;
+    const s = document.createElement('style');
+    s.id = 'ae-style';
+    s.textContent = `
+      #ae-nav { position: fixed; left:0; right:0; bottom:0; background:#f8f8f8; border-top:1px solid #e7e7e7; z-index:2147483000; padding:6px 10px; }
+      body.ae-hasbar { padding-bottom: 40px !important; }
+      #ae-wrap { display:flex; align-items:center; gap:12px; }
+      #ae-state { min-width:240px; font-size:13px; }
+      #ae-progress { flex:1; height:12px; background:#eee; border-radius:4px; overflow:hidden; display:flex; }
+      #ae-bar-ok { height:100%; background:#5cb85c; width:0%; }
+      #ae-bar-err { height:100%; background:#d9534f; width:0%; }
+    `;
+    document.head.appendChild(s);
+  }
+  function createNavbar() {
+    if (document.getElementById('ae-nav')) return;
+    ensureStyles();
+    const nav = document.createElement('div'); nav.id = 'ae-nav';
+    const wrap = document.createElement('div'); wrap.id = 'ae-wrap';
+    const label = document.createElement('span'); label.id = 'ae-state'; label.className = 'label label-success'; label.textContent = 'Bereit';
+    const progress = document.createElement('div'); progress.id = 'ae-progress';
+    const ok = document.createElement('div'); ok.id = 'ae-bar-ok';
+    const err = document.createElement('div'); err.id = 'ae-bar-err';
+    progress.append(ok, err); wrap.append(label, progress); nav.append(wrap);
+    document.body.append(nav); document.body.classList.add('ae-hasbar');
+  }
+  function setState(text, cls = 'info') {
+    const label = document.getElementById('ae-state');
+    if (!label) return;
+    label.className = `label label-${cls}`;
+    label.textContent = text;
+  }
+  function updateProgress(ok, err, total) {
+    const okBar = document.getElementById('ae-bar-ok');
+    const errBar = document.getElementById('ae-bar-err');
+    const label = document.getElementById('ae-state');
+    if (!okBar || !errBar || !label) return;
+    const safeTotal = Math.max(total, 1);
+    okBar.style.width = `${(ok / safeTotal) * 100}%`;
+    errBar.style.width = `${(err / safeTotal) * 100}%`;
+    label.textContent = `${ok + err}/${total} Gebäude`;
   }
 
-  // robust gegen AJAX-Nachladen
-  setInterval(addButtonsIfMissing, 1500);
+  async function processLeitstelle(leitstellenId, action) {
+    createNavbar();
+    setState('Lade Gebäude über API-Speicher…', 'info');
+    const delays = await getConfiguredDelays();
+    const buildings = await getBuildingsOfLeitstelle(leitstellenId);
+    const relevantBuildings = [];
+
+    for (const b of buildings) {
+      const ids = await getSelectedIdsForType(b.building_type, action);
+      if (ids.length > 0) relevantBuildings.push({ building: b, ids });
+    }
+
+    const total = relevantBuildings.length;
+    if (total === 0) { setState('Nichts konfiguriert', 'success'); return; }
+
+    let ok = 0, err = 0;
+    for (const item of relevantBuildings) {
+      const building = item.building;
+      try {
+        setState(`${building.name}`, 'info');
+        updateProgress(ok, err, total);
+
+        const labels = item.ids.map(id => norm(getLabelByTypeAndId(building.building_type, id)));
+        const extensions = await fetchExtensionsForBuilding(building.id);
+        const toChange = extensions.filter(ext => {
+          const match = labels.some(label => ext.text.includes(label));
+          if (!match) return false;
+          return (action === 'aktivieren' && ext.buttonText === 'einsatzbereit') ||
+                 (action === 'deaktivieren' && ext.buttonText === 'nicht einsatzbereit');
+        });
+
+        for (const ext of toChange) {
+          const success = await postWithCsrf(ext.href);
+          if (!success) console.warn('[Activate Extensions] Umschaltung fehlgeschlagen:', ext.href);
+          await delay(delays.action);
+        }
+        ok++;
+      } catch (e) {
+        console.error('[Activate Extensions] Fehler bei Gebäude', building.id, building.name, e);
+        err++;
+      }
+      updateProgress(ok, err, total);
+      await delay(delays.building);
+    }
+    setState('Fertig', err ? 'warning' : 'success');
+  }
+
+  function addButtonsToBuildingDetails() {
+    const h1 = document.querySelector('h1[building_type]');
+    if (!h1) return;
+    if (Number(h1.getAttribute('building_type')) !== 7) return;
+    const buildingDetailsElement = document.querySelector('.building-title ~ dl.dl-horizontal');
+    if (!buildingDetailsElement || document.getElementById('ae-building-details-buttons')) return;
+
+    const dtElement = document.createElement('dt');
+    const dtTextElement = document.createElement('strong');
+    dtTextElement.innerText = 'Erweiterungen schalten:';
+    dtElement.appendChild(dtTextElement);
+
+    const ddElement = document.createElement('dd');
+    const buttonGroup = document.createElement('div');
+    buttonGroup.id = 'ae-building-details-buttons';
+    buttonGroup.className = 'btn-group';
+
+    const btnActivate = document.createElement('a');
+    btnActivate.href = '';
+    btnActivate.className = 'btn btn-default btn-xs';
+    btnActivate.innerText = 'Aktivieren';
+
+    const btnDeactivate = document.createElement('a');
+    btnDeactivate.href = '';
+    btnDeactivate.className = 'btn btn-default btn-xs';
+    btnDeactivate.innerText = 'Deaktivieren';
+
+    const btnSettings = document.createElement('a');
+    btnSettings.className = 'btn btn-default btn-xs';
+    btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+    btnSettings.target = '_blank';
+    const cog = document.createElement('span');
+    cog.className = 'glyphicon glyphicon-cog';
+    cog.title = 'Einstellungen';
+    btnSettings.appendChild(cog);
+
+    async function run(action, button) {
+      if (button.classList.contains('disabled')) return;
+      button.classList.add('disabled');
+      try { await processLeitstelle(getBuildingIdFromUrl(), action); }
+      catch (e) { console.error('[Activate Extensions] Leitstellenlauf fehlgeschlagen', e); createNavbar(); setState('Fehler beim Leitstellenlauf', 'danger'); }
+      button.classList.remove('disabled');
+    }
+
+    btnActivate.addEventListener('click', async event => { event.preventDefault(); await run('aktivieren', btnActivate); });
+    btnDeactivate.addEventListener('click', async event => { event.preventDefault(); await run('deaktivieren', btnDeactivate); });
+
+    buttonGroup.append(btnActivate, btnDeactivate, btnSettings);
+    ddElement.appendChild(buttonGroup);
+    buildingDetailsElement.appendChild(dtElement);
+    buildingDetailsElement.appendChild(ddElement);
+  }
+
+  addButtonsToBuildingDetails();
 })();
