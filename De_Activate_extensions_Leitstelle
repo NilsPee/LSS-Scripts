@@ -351,7 +351,7 @@
 
     const dtElement = document.createElement('dt');
     const dtTextElement = document.createElement('strong');
-    dtTextElement.innerText = 'Erweiterungen schalten:';
+    dtTextElement.innerText = 'Erweiterung de-/aktiv:';
     dtElement.appendChild(dtTextElement);
 
     const ddElement = document.createElement('dd');
