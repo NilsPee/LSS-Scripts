@@ -1,210 +1,321 @@
 // ==UserScript==
 // @name         Leitstelle delete vehicles
-// @namespace    http://tampermonkey.net/
-// @version      2.0
-// @description  Löscht Fahrzeuge mit vordefinierten Typ-IDs. Läuft nur im Fahrzeug-Tab
+// @namespace    NilsPe.delete.vehicles
+// @version      2.2.0
+// @description  Löscht Fahrzeuge nach einstellbaren Typ-IDs. Mit Settings-Dropdown und Behalten-Regel pro Gebäude/Typ.
 // @author       Caddy21 & NilsPe
 // @match        https://www.leitstellenspiel.de/buildings/*
-// @grant        none
+// @match        https://www.leitstellenspiel.de/settings/index*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @require      https://update.greasyfork.org/scripts/528065/Skripteinstellungen.user.js
 // ==/UserScript==
 
-(function () {
+(async function () {
     'use strict';
 
-    /*** === KONFIGURATION: PERFORMANCE === */
-    const MIN_DELAY_MS = 100; // Min. Pause nach JEDEM Löschvorgang (pro Worker)
-    const CONCURRENCY  = 1; // Wie viele Fahrzeuge parallel löschen (2–10 sinnvoll)
-    /*** === ENDE KONFIGURATION: PERFORMANCE === */
+    const SETTINGS_IDENTIFIER = 'delete_vehicles_by_type';
 
-    /*** === KONFIGURATION: FAHRZEUG-TYP-IDs (auskommentiert) ===
-     * Entferne // vor den IDs, die du löschen willst (z. B. 32 für FüStW, 50 für GruKw).
-     */
-    const VEHICLE_TYPE_IDS = [
-        // 0, // LF 20
-        // 1, // LF 10
-        // 2, // DLK 23
-        // 3, // ELW 1
-        // 4, // RW
-        // 5, // GW-A
-        // 6, // LF 8/6
-        // 7, // LF 20/16
-        // 8, // LF 10/6
-        // 9, // LF 16-TS
-        // 10, // GW-Öl
-        // 11, // GW-L2-Wasser
-        // 12, // GW-Messtechnik
-        // 13, // SW 1000
-        // 14, // SW 2000
-        // 15, // SW 2000-Tr
-        // 16, // SW Kats
-        // 17, // TLF 2000
-        // 18, // TLF 3000
-        // 19, // TLF 8/18
-        // 20, // TLF 8/8
-        // 21, // TLF 16/24-Tr
-        // 22, // TLF 16/25
-        // 23, // TLF 16/45
-        // 24, // TLF 20/40
-        // 25, // TLF 20/40-SL
-        // 26, // TLF 16
-        // 27, // GW-Gefahrgut
-        // 28, // RTW
-        // 29, // NEF
-        // 30, // HLF 20
-        // 31, // RTH
-         32, // FuStW
-        // 33, // GW-Höhenrettung
-        // 34, // ELW 2
-        // 35, // leBefKw
-        // 36, // MTW
-        // 37, // TSF-W
-        // 38, // KTW
-        // 39, // GKW
-        // 40, // MTW-TZ
-        // 41, // MzGW (FGr N)
-        // 42, // LKW K 9
-        // 43, // BRmG R
-        // 44, // Anh DLE
-        // 45, // MLW 5
-        // 46, // WLF
-        // 47, // AB-Rüst
-        // 48, // AB-Atemschutz
-        // 49, // AB-Öl
-         50, // GruKw
-        // 51, // FüKw
-        // 52, // GefKw
-        // 53, // Dekon-P
-        // 54, // AB-Dekon-P
-        // 55, // KdoW-LNA
-        // 56, // KdoW-OrgL
-        // 57, // FwK
-        // 58, // RTW Typ B
-        // 59, // ELW 1 (SEG)
-        // 60, // GW-San
-        // 61, // Polizeihubschrauber
-        // 62, // AB-Schlauch
-        // 63, // GW-Taucher
-        // 64, // GW-Wasserrettung
-        // 65, // LKW 7 Lsr 19 tm
-        // 66, // Anh MzB
-        // 67, // Anh SchlB
-        // 68, // Anh MzAB
-        // 69, // Tauchkraftwagen
-        // 70, // MZB
-        // 71, // AB-MZB
-        // 72, // WaWe 10
-        // 73, // GRTW
-        // 74, // NAW
-        // 75, // FLF
-        // 76, // Rettungstreppe
-        // 77, // AB-Gefahrgut
-        // 78, // AB-Einsatzleitung
-        // 79, // SEK-ZF
-        // 80, // SEK-MTF
-        // 81, // MEK-ZF
-        // 82, // MEK-MTF
-        // 83, // GW-Werkfeuerwehr
-        // 84, // ULF mit Löscharm
-        // 85, // TM 50
-        // 86, // Turbolöscher
-        // 87, // TLF 4000
-        // 88, // KLF
-        // 89, // MLF
-        // 90, // HLF 10
-        // 91, // Rettungshundefahrzeug
-        // 92, // Anh Hund
-        // 93, // MTW-O (Fachgruppe Ortung)
-        // 94, // DHuFüKw
-        // 95, // Polizeimotorrad
-        // 96, // Außenlastbehälter (allgemein)
-        // 97, // ITW
-        // 98, // Zivilstreifenwagen
-        // 99, // LKW 7 Lbw (alt,...)
-        // 100, // MLW 4
-        // 101, // Anh SwPu
-        // 102, // Anh 7
-        // 103, // FüStW (DGL)
-        // 104, // GW-L1
-        // 105, // GW-L2
-        // 106, // MTF-L
-        // 107, // LF-L
-        // 108, // AB-L
-        // 109, // MzGW SB
-        // 110, // NEA50 (THW)
-        // 111, // NEA50 (FW)
-        // 112, // NEA200 (THW)
-        // 113, // NEA200 (FW)
-        // 114, // GW-Lüfter
-        // 115, // Anh Lüfter
-        // 116, // AB-Lüfter
-        // 117, // AB-Tank
-        // 118, // KleinTankwagen
-        // 119, // AB-Lösch
-        // 120, // Tankwagen
-        // 121, // GTLF
-        // 122, // LKW 7 Lbw (FGr E)
-        // 123, // LKW 7 Lbw (FGr WP)
-        // 124, // MTW OV
-        // 125, // MTW-Tr UL
-        // 126, // MTF Drohne
-        // 127, // GW UAS
-        // 128, // ELW 1 Drohne
-        // 129, // ELW 2 Drohne
-        // 130, // GW-Bt
-        // 131, // Bt-Kombi
-        // 132, // FKH
-        // 133, // Bt LKW
-        // 134, // Pferdetransporter klein
-        // 135, // Pferdetransporter groß
-        // 136, // Anh Pferdetransport
-        // 137, // Zugfahrzeug Pferdetransport
-        // 138, // GW-Verpflegung (Feuerwehr)
-        // 139, // GW-Küche (Feuerwehr)
-        // 140, // MTW-Verpflegung (Feuerwehr)
-        // 141, // FKH (Feuerwehr)
-        // 142, // AB-Küche (Feuerwehr)
-        // 143, // Anh Schlauch
-        // 144, // FüKomKW (THW)
-        // 145, // Anh FüLa
-        // 146, // FmKw
-        // 147, // MTW-FGr K
-        // 148, // GW Bergrettung (NEF)
-        // 149, // GW Bergrettung
-        // 150, // ELW Bergrettung
-        // 151, // ATV
-        // 152, // Hundestaffel (Bergrettung)
-        // 153, // Schneefahrzeug
-        // 154, // Anh Höhenrettung (Bergrettung)
-        // 155, // Polizeihubschrauber mit verbauter Winde
-        // 156, // RTH Winde
-        // 157, // GW-Höhenrettung (Bergrettung)
-        // 158, // Seenotrettungskreuzer
-        // 159, // Seenotrettungsboot
-        // 160, // Hubschrauber (Seenotrettung)
-        // 161, // RW Schiene
-        // 162, // HLF Schiene
-        // 163, // AB Schiene
-        // 164, // LauKW
-        // 165, // PTLF 4000
-        // 166, // SLF
-        // 167, // Anh Sonderlöschmittel
-        // 168, // AB-Sonderlöschmittel
-        // 169, // AB-Wasser/Schaum
-        // 170, // GW TeSi
-        // 171, // LKW Technik
-        // 172, // Anh TeSi
-        // 173, // MTW TeSi
-        // 174, // NEA 50
-        // 175, // NEA 50
+    const KEY_SELECTED_TYPES = 'dv_type_ids_selected';
+    const KEY_KEEP_PER_STATION = 'dv_keep_per_station';
+    const KEY_DELAY_MS = 'dv_min_delay_ms';
+    const KEY_CONCURRENCY = 'dv_concurrency';
+
+    const DEFAULT_SELECTED = [32, 50];
+    const DEFAULT_KEEP_PER_STATION = 0;
+    const DEFAULT_DELAY_MS = 100;
+    const DEFAULT_CONCURRENCY = 1;
+
+    const VEHICLE_OPTIONS = [
+        { value: '0', label: 'LF 20' },
+        { value: '1', label: 'LF 10' },
+        { value: '2', label: 'DLK 23' },
+        { value: '3', label: 'ELW 1' },
+        { value: '4', label: 'RW' },
+        { value: '5', label: 'GW-A' },
+        { value: '6', label: 'LF 8/6' },
+        { value: '7', label: 'LF 20/16' },
+        { value: '8', label: 'LF 10/6' },
+        { value: '9', label: 'LF 16-TS' },
+        { value: '10', label: 'GW-Öl' },
+        { value: '11', label: 'GW-L2-Wasser' },
+        { value: '12', label: 'GW-Messtechnik' },
+        { value: '13', label: 'SW 1000' },
+        { value: '14', label: 'SW 2000' },
+        { value: '15', label: 'SW 2000-Tr' },
+        { value: '16', label: 'SW Kats' },
+        { value: '17', label: 'TLF 2000' },
+        { value: '18', label: 'TLF 3000' },
+        { value: '19', label: 'TLF 8/8' },
+        { value: '20', label: 'TLF 8/18' },
+        { value: '21', label: 'TLF 16/24-Tr' },
+        { value: '22', label: 'TLF 16/25' },
+        { value: '23', label: 'TLF 16/45' },
+        { value: '24', label: 'TLF 20/40' },
+        { value: '25', label: 'TLF 20/40-SL' },
+        { value: '26', label: 'TLF 16' },
+        { value: '27', label: 'GW-Gefahrgut' },
+        { value: '28', label: 'RTW' },
+        { value: '29', label: 'NEF' },
+        { value: '30', label: 'HLF 20' },
+        { value: '31', label: 'Rettungshubschrauber' },
+        { value: '32', label: 'FuStW' },
+        { value: '33', label: 'GW-Höhenrettung' },
+        { value: '34', label: 'ELW 2' },
+        { value: '35', label: 'leBefKw' },
+        { value: '36', label: 'MTW' },
+        { value: '37', label: 'TSF-W' },
+        { value: '38', label: 'KTW' },
+        { value: '39', label: 'GKW' },
+        { value: '40', label: 'MTW-TZ' },
+        { value: '41', label: 'MzGW (FGr N)' },
+        { value: '42', label: 'LKW K 9' },
+        { value: '43', label: 'BrmG R' },
+        { value: '44', label: 'Anh DLE' },
+        { value: '45', label: 'MLW 5' },
+        { value: '46', label: 'WLF' },
+        { value: '47', label: 'AB-Rüst' },
+        { value: '48', label: 'AB-Atemschutz' },
+        { value: '49', label: 'AB-Öl' },
+        { value: '50', label: 'GruKw' },
+        { value: '51', label: 'FüKw' },
+        { value: '52', label: 'GefKw' },
+        { value: '53', label: 'Dekon-P' },
+        { value: '54', label: 'AB-Dekon-P' },
+        { value: '55', label: 'KdoW-LNA' },
+        { value: '56', label: 'KdoW-OrgL' },
+        { value: '57', label: 'FwK' },
+        { value: '58', label: 'KTW Typ B' },
+        { value: '59', label: 'ELW 1 (SEG)' },
+        { value: '60', label: 'GW-San' },
+        { value: '61', label: 'Polizeihubschrauber' },
+        { value: '62', label: 'AB-Schlauch' },
+        { value: '63', label: 'GW-Taucher' },
+        { value: '64', label: 'GW-Wasserrettung' },
+        { value: '65', label: 'LKW 7 Lkr 19 tm' },
+        { value: '66', label: 'Anh MzB' },
+        { value: '67', label: 'Anh SchlB' },
+        { value: '68', label: 'Anh MzAB' },
+        { value: '69', label: 'Tauchkraftwagen' },
+        { value: '70', label: 'MZB' },
+        { value: '71', label: 'AB-MZB' },
+        { value: '72', label: 'WaWe 10' },
+        { value: '73', label: 'GRTW' },
+        { value: '74', label: 'NAW' },
+        { value: '75', label: 'FLF' },
+        { value: '76', label: 'Rettungstreppe' },
+        { value: '77', label: 'AB-Gefahrgut' },
+        { value: '78', label: 'AB-Einsatzleitung' },
+        { value: '79', label: 'SEK – ZF' },
+        { value: '80', label: 'SEK – MTF' },
+        { value: '81', label: 'MEK – ZF' },
+        { value: '82', label: 'MEK – MTF' },
+        { value: '83', label: 'GW-Werkfeuerwehr' },
+        { value: '84', label: 'ULF mit Löscharm' },
+        { value: '85', label: 'TM 50' },
+        { value: '86', label: 'Turbolöscher' },
+        { value: '87', label: 'TLF 4000' },
+        { value: '88', label: 'KLF' },
+        { value: '89', label: 'MLF' },
+        { value: '90', label: 'HLF 10' },
+        { value: '91', label: 'Rettungshundefahrzeug' },
+        { value: '92', label: 'Anh Hund' },
+        { value: '93', label: 'MTW-O' },
+        { value: '94', label: 'DhuFüKw' },
+        { value: '95', label: 'Polizeimotorrad' },
+        { value: '97', label: 'ITW' },
+        { value: '98', label: 'Zivilstreifenwagen' },
+        { value: '99', label: 'Außenlastbehälter (allg.)' },
+        { value: '100', label: 'MLW 4' },
+        { value: '101', label: 'Anh SwPu' },
+        { value: '102', label: 'Anh 7' },
+        { value: '103', label: 'FuStW (DGL)' },
+        { value: '104', label: 'GW-L1' },
+        { value: '105', label: 'GW-L2' },
+        { value: '106', label: 'MTF-L' },
+        { value: '107', label: 'LF-L' },
+        { value: '108', label: 'AB-L' },
+        { value: '109', label: 'MzGW SB' },
+        { value: '110', label: 'NEA50 (THW)' },
+        { value: '111', label: 'NEA50 (FW)' },
+        { value: '112', label: 'NEA200 (THW)' },
+        { value: '113', label: 'NEA200 (FW)' },
+        { value: '114', label: 'GW-Lüfter' },
+        { value: '115', label: 'Anh Lüfter' },
+        { value: '116', label: 'AB-Lüfter' },
+        { value: '117', label: 'AB-Tank' },
+        { value: '118', label: 'Kleintankwagen' },
+        { value: '119', label: 'AB-Lösch' },
+        { value: '120', label: 'Tankwagen' },
+        { value: '121', label: 'GTLF' },
+        { value: '122', label: 'LKW 7 Lbw (FGr E)' },
+        { value: '123', label: 'LKW 7 Lbw (FGr WP)' },
+        { value: '124', label: 'MTW-OV' },
+        { value: '125', label: 'MTW-TR UL (Drohne)' },
+        { value: '126', label: 'MTF Drohne' },
+        { value: '127', label: 'GW UAS (Drohnenfahrzeug)' },
+        { value: '128', label: 'ELW 1 Drohne' },
+        { value: '129', label: 'ELW 2 Drohne' },
+        { value: '130', label: 'GW-Bt' },
+        { value: '131', label: 'Bt-Kombi' },
+        { value: '132', label: 'FKH' },
+        { value: '133', label: 'Bt LKW' },
+        { value: '134', label: 'Pferdetransporter klein' },
+        { value: '135', label: 'Pferdetransporter groß' },
+        { value: '136', label: 'Anh Pferdetransport' },
+        { value: '137', label: 'Zugfahrzeug Pferdetransport' },
+        { value: '138', label: 'GW-Verpflegung' },
+        { value: '139', label: 'GW-Küche' },
+        { value: '140', label: 'MTW-Verpflegung' },
+        { value: '141', label: 'FKH' },
+        { value: '142', label: 'AB-Küche' },
+        { value: '143', label: 'Anh Schlauch' },
+        { value: '144', label: 'FüKW (THW)' },
+        { value: '145', label: 'FüKomKW' },
+        { value: '146', label: 'Anh FüLa' },
+        { value: '147', label: 'FmKW' },
+        { value: '148', label: 'MTW-FGr K' },
+        { value: '162', label: 'RW Schiene' },
+        { value: '163', label: 'HLF Schiene' },
+        { value: '164', label: 'AB Schiene' },
+        { value: '165', label: 'LauKW' },
+        { value: '166', label: 'PTLF 4000' },
+        { value: '167', label: 'SLF' },
+        { value: '168', label: 'Anh Sonderlöschmittel' },
+        { value: '169', label: 'AB-Sonderlöschmittel' },
+        { value: '170', label: 'AB-Wasser/Schaum' },
+        { value: '171', label: 'GW TeSi' },
+        { value: '172', label: 'LKW Technik (Notstrom)' },
+        { value: '173', label: 'MTW TeSi' },
+        { value: '174', label: 'Anh TeSi' },
+        { value: '175', label: 'NEA 50' },
     ];
-    /*** === ENDE KONFIGURATION === */
 
     const UI = {
         btnPreview: 'lss-preview-by-type-btn',
         btnDelete: 'lss-delete-by-type-btn',
+        btnSettings: 'lss-delete-by-type-settings-btn',
         status: 'lss-delete-by-type-status',
         markClass: 'lss-delete-marked',
     };
+
+    function clamp(n, min, max) {
+        return Math.max(min, Math.min(max, n));
+    }
+
+    function parseStoredSelected(raw) {
+        if (!raw) return [];
+
+        try {
+            const v = JSON.parse(raw);
+            if (Array.isArray(v)) {
+                return v.map(x => parseInt(x, 10)).filter(Number.isInteger);
+            }
+        } catch {}
+
+        return String(raw)
+            .split(/[,\s;]+/)
+            .map(s => parseInt(s, 10))
+            .filter(Number.isInteger);
+    }
+
+    async function loadConfig() {
+        const rawSel = await GM_getValue(KEY_SELECTED_TYPES, JSON.stringify(DEFAULT_SELECTED));
+        const selected = parseStoredSelected(rawSel);
+        const keep = Number(await GM_getValue(KEY_KEEP_PER_STATION, DEFAULT_KEEP_PER_STATION));
+        const delay = Number(await GM_getValue(KEY_DELAY_MS, DEFAULT_DELAY_MS));
+        const conc = Number(await GM_getValue(KEY_CONCURRENCY, DEFAULT_CONCURRENCY));
+
+        return {
+            VEHICLE_TYPE_IDS: Array.from(new Set(selected)).filter(n => n >= 0),
+            KEEP_PER_STATION: clamp(Number.isFinite(keep) ? keep : 0, 0, 100),
+            MIN_DELAY_MS: clamp(Number.isFinite(delay) ? delay : DEFAULT_DELAY_MS, 0, 5000),
+            CONCURRENCY: clamp(Number.isFinite(conc) ? conc : DEFAULT_CONCURRENCY, 1, 20),
+        };
+    }
+
+    if (location.pathname.startsWith('/settings/index')) {
+        if (!document.getElementById('dv-settings-style')) {
+            const settingsStyle = document.createElement('style');
+            settingsStyle.id = 'dv-settings-style';
+            settingsStyle.textContent = `
+                body { padding-bottom: 140px !important; }
+                #${SETTINGS_IDENTIFIER} { padding-bottom: 140px !important; }
+            `;
+            document.head.appendChild(settingsStyle);
+        }
+
+        await addOptions({
+            identifier: SETTINGS_IDENTIFIER,
+            title: 'Delete Vehicles',
+            settings: [
+                { type: 'header', text: 'Fahrzeugtypen' },
+                {
+                    type: 'select',
+                    key: KEY_SELECTED_TYPES,
+                    label: 'Fahrzeugtypen löschen',
+                    title: 'Mehrfachauswahl (Strg/Cmd für mehrere)',
+                    multiple: true,
+                    options: VEHICLE_OPTIONS.map(o => ({
+                        value: String(o.value),
+                        label: `${o.value} ${o.label}`,
+                        text: `${o.value} ${o.label}`,
+                        name: `${o.value} ${o.label}`,
+                    })),
+                },
+                {
+                    type: 'number',
+                    key: KEY_KEEP_PER_STATION,
+                    default: DEFAULT_KEEP_PER_STATION,
+                    min: 0,
+                    max: 100,
+                    label: 'Fahrzeuge pro Gebäude und Typ behalten'
+                },
+                { type: 'header', text: 'Performance' },
+                {
+                    type: 'number',
+                    key: KEY_DELAY_MS,
+                    default: DEFAULT_DELAY_MS,
+                    min: 0,
+                    max: 5000,
+                    label: 'Min. Delay je Worker [ms]'
+                },
+                {
+                    type: 'number',
+                    key: KEY_CONCURRENCY,
+                    default: DEFAULT_CONCURRENCY,
+                    min: 1,
+                    max: 20,
+                    label: 'Parallelität (Worker)'
+                }
+            ]
+        });
+
+        const panel = document.getElementById(SETTINGS_IDENTIFIER);
+        if (!panel) return;
+
+        const select = panel.querySelector('select[multiple]');
+        if (!select) return;
+
+        const raw = await GM_getValue(KEY_SELECTED_TYPES, JSON.stringify(DEFAULT_SELECTED));
+        const selectedIds = parseStoredSelected(raw);
+
+        for (const opt of select.options) {
+            const v = parseInt(opt.value, 10);
+            opt.selected = selectedIds.includes(v);
+        }
+
+        select.dispatchEvent(new Event('change'));
+
+        select.addEventListener('change', async () => {
+            const vals = Array.from(select.selectedOptions)
+                .map(o => parseInt(o.value, 10))
+                .filter(Number.isInteger);
+            await GM_setValue(KEY_SELECTED_TYPES, JSON.stringify(vals));
+        });
+
+        return;
+    }
 
     // Helpers
     function inVehicleTab() { return !!document.querySelector('#vehicle_table'); }
@@ -225,48 +336,65 @@
 
         const container = document.createElement('div');
         container.style.display = 'flex';
-        container.style.gap = '8px';
         container.style.margin = '8px 0';
+        container.style.alignItems = 'center';
 
         const btnPrev = document.createElement('a');
         btnPrev.id = UI.btnPreview;
-        btnPrev.className = 'btn btn-info btn-xs';
-        btnPrev.textContent = 'Vorschau markieren (IDs)';
-        btnPrev.addEventListener('click', () => markMatchingRows());
+        btnPrev.className = 'btn btn-default btn-xs';
+        btnPrev.textContent = 'Vorschau markieren';
+        btnPrev.addEventListener('click', async () => {
+            const cfg = await loadConfig();
+            markMatchingRows(cfg);
+        });
 
         const btnDel = document.createElement('a');
         btnDel.id = UI.btnDelete;
-        btnDel.className = 'btn btn-danger btn-xs';
-        btnDel.textContent = 'Fahrzeuge löschen (IDs)';
+        btnDel.className = 'btn btn-default btn-xs';
+        btnDel.textContent = 'Fahrzeuge löschen';
         btnDel.addEventListener('click', async () => {
-            if (VEHICLE_TYPE_IDS.length === 0) {
-                alert('Liste der Fahrzeug-TYP-IDs ist leer. Aktiviere Einträge in der Konfiguration.');
+            const cfg = await loadConfig();
+
+            if (cfg.VEHICLE_TYPE_IDS.length === 0) {
+                alert('Keine Fahrzeugtypen ausgewählt. Öffne die Einstellungen.');
                 return;
             }
-            const rows = getMatchingRows();
+
+            const rows = getMatchingRows(cfg);
+
             if (rows.length === 0) {
                 alert('Keine passenden Fahrzeuge in der Tabelle gefunden.');
                 return;
             }
-            if (confirm(`Sollen wirklich ${rows.length} Fahrzeuge (nach Typ-ID) gelöscht werden?`)) {
-                // Buttons sperren, Status setzen
-                btnPrev.disabled = true;
-                btnDel.disabled = true;
-                btnPrev.classList.add('disabled');
-                btnDel.classList.add('disabled');
 
-                await deleteRows(rows, (done, total) => {
+            if (confirm(`Sollen wirklich ${rows.length} Fahrzeuge gelöscht werden?\nBehalten pro Gebäude/Typ: ${cfg.KEEP_PER_STATION}\nDelay: ${cfg.MIN_DELAY_MS}ms | Parallel: ${cfg.CONCURRENCY}`)) {
+                for (const b of [btnPrev, btnDel, btnSettings]) {
+                    b.classList.add('disabled');
+                    b.style.pointerEvents = 'none';
+                }
+
+                await deleteRows(rows, cfg, (done, total) => {
                     const status = document.getElementById(UI.status);
                     if (status) status.textContent = `Gelöscht: ${done} / ${total}`;
                 });
 
-                // Buttons wieder freigeben
-                btnPrev.disabled = false;
-                btnDel.disabled = false;
-                btnPrev.classList.remove('disabled');
-                btnDel.classList.remove('disabled');
+                for (const b of [btnPrev, btnDel, btnSettings]) {
+                    b.classList.remove('disabled');
+                    b.style.pointerEvents = '';
+                }
             }
         });
+
+        const btnSettings = document.createElement('a');
+        btnSettings.id = UI.btnSettings;
+        btnSettings.className = 'btn btn-default btn-xs';
+        btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+        btnSettings.target = '_blank';
+
+        const cog = document.createElement('span');
+        cog.className = 'glyphicon glyphicon-cog';
+        cog.title = 'Einstellungen';
+        btnSettings.appendChild(cog);
 
         const status = document.createElement('div');
         status.id = UI.status;
@@ -276,25 +404,43 @@
 
         container.appendChild(btnPrev);
         container.appendChild(btnDel);
+        container.appendChild(btnSettings);
         container.appendChild(status);
 
         table.parentNode.insertBefore(container, table);
     }
 
     function getVehicleTypeIdFromRow(row) {
-        // laut Screenshot: <img ... vehicle_type_id="50">
         const img = row.querySelector('td img[vehicle_type_id]');
         return img?.getAttribute('vehicle_type_id') || null;
     }
 
     function getVehicleIdFromRow(row) {
-        // Link in zweiter Spalte: /vehicles/<id>
         const link = row.querySelector('a[href^="/vehicles/"]');
         return link?.getAttribute('href')?.split('/').pop() || null;
     }
 
-    function getMatchingRows() {
-        const set = new Set(VEHICLE_TYPE_IDS.map(String));
+    function getStationKeyFromRow(row) {
+        const buildingLink = row.querySelector('a[href*="/buildings/"]');
+
+        if (buildingLink) {
+            const href = buildingLink.getAttribute('href') || '';
+            const match = href.match(/\/buildings\/(\d+)/);
+            if (match) return `building:${match[1]}`;
+        }
+
+        const html = row.innerHTML || '';
+        const htmlMatch = html.match(/\/buildings\/(\d+)/);
+        if (htmlMatch) return `building:${htmlMatch[1]}`;
+
+        const buildingMatch = location.pathname.match(/^\/buildings\/(\d+)/);
+        if (buildingMatch) return `building:${buildingMatch[1]}`;
+
+        return `unknown-station:${getVehicleIdFromRow(row) || Math.random()}`;
+    }
+
+    function getAllMatchingRows(cfg) {
+        const set = new Set(cfg.VEHICLE_TYPE_IDS.map(String));
         const table = document.querySelector('#vehicle_table');
         if (!table) return [];
         const rows = Array.from(table.querySelectorAll('tbody tr'));
@@ -302,6 +448,33 @@
             const typeId = getVehicleTypeIdFromRow(row);
             return typeId && set.has(typeId);
         });
+    }
+
+    function getMatchingRows(cfg) {
+        const rows = getAllMatchingRows(cfg);
+
+        if (cfg.KEEP_PER_STATION <= 0) return rows;
+
+        const grouped = new Map();
+
+        for (const row of rows) {
+            const typeId = getVehicleTypeIdFromRow(row);
+            if (!typeId) continue;
+
+            const stationKey = getStationKeyFromRow(row);
+            const groupKey = `${stationKey}::type:${typeId}`;
+
+            if (!grouped.has(groupKey)) grouped.set(groupKey, []);
+            grouped.get(groupKey).push(row);
+        }
+
+        const result = [];
+
+        for (const [, groupRows] of grouped.entries()) {
+            result.push(...groupRows.slice(cfg.KEEP_PER_STATION));
+        }
+
+        return result;
     }
 
     function clearMarks() {
@@ -312,21 +485,20 @@
         });
     }
 
-    function markMatchingRows() {
+    function markMatchingRows(cfg) {
         clearMarks();
         const mode = getMode();
-        const rows = getMatchingRows();
+        const rows = getMatchingRows(cfg);
         rows.forEach(row => {
             row.classList.add(UI.markClass);
             row.style.outline = `2px solid ${mode === 'dark' ? '#5bc0de' : '#d9534f'}`;
             row.style.background = mode === 'dark' ? 'rgba(91,192,222,0.1)' : 'rgba(217,83,79,0.08)';
         });
         const status = document.getElementById(UI.status);
-        if (status) status.textContent = `Vorschau: ${rows.length} passende Fahrzeuge markiert.`;
+        if (status) status.textContent = `Vorschau: ${rows.length} Fahrzeuge würden gelöscht.`;
     }
 
-    // ********** NEU: schnelles Löschen ohne Vor-GET + Parallelität **********
-    async function deleteRows(rows, onProgress) {
+    async function deleteRows(rows, cfg, onProgress) {
         const csrfToken = getCSRFToken();
         if (!csrfToken) { alert('CSRF-Token nicht gefunden. Abbruch.'); return; }
 
@@ -334,17 +506,18 @@
         const status = document.getElementById(UI.status);
         if (status) status.textContent = `Löschen gestartet: 0 / ${total}`;
 
-        // Queue aus {id,row}
         const queue = rows.map(row => ({ id: getVehicleIdFromRow(row), row })).filter(x => !!x.id);
 
         let done = 0;
+        let err = 0;
 
         async function worker() {
             while (queue.length) {
                 const item = queue.shift();
+                let success = true;
+
                 try {
-                    // Direkt auf /vehicles/{id} löschen (ohne vorheriges fetch der Detailseite)
-                    await fetch(`/vehicles/${item.id}`, {
+                    const res = await fetch(`/vehicles/${item.id}`, {
                         method: 'POST',
                         credentials: 'include',
                         headers: {
@@ -354,35 +527,40 @@
                         },
                         body: `_method=delete&authenticity_token=${encodeURIComponent(csrfToken)}`
                     });
+
+                    if (!res || !res.ok) success = false;
                 } catch (e) {
+                    success = false;
                     console.error(`[Fehler] Löschen fehlgeschlagen für ${item.id}`, e);
                 }
 
-                // UI direkt säubern, Zähler hoch
-                item.row?.remove();
+                if (success) {
+                    item.row?.remove();
+                } else {
+                    err++;
+                }
+
                 done++;
                 if (typeof onProgress === 'function') onProgress(done, total);
 
-                // kurze Bremse pro Worker
-                if (MIN_DELAY_MS > 0) {
-                    await new Promise(r => setTimeout(r, MIN_DELAY_MS));
+                if (cfg.MIN_DELAY_MS > 0) {
+                    await new Promise(r => setTimeout(r, cfg.MIN_DELAY_MS));
                 }
             }
         }
 
-        // Starte mehrere Worker parallel
-        const workers = Array.from({ length: Math.max(1, CONCURRENCY) }, () => worker());
+        const workers = Array.from({ length: Math.max(1, cfg.CONCURRENCY) }, () => worker());
         await Promise.all(workers);
 
         clearMarks();
-        if (status) status.textContent = `Löschen abgeschlossen: ${done} / ${total}`;
+        if (status) status.textContent = err ? `Löschen abgeschlossen: ${done} / ${total}, Fehler: ${err}` : `Löschen abgeschlossen: ${done} / ${total}`;
     }
 
-    // Buttons/Status verfügbar halten, auch bei Ajax-Reloads
     function heartbeat() {
         if (!inVehicleTab()) return;
         ensureButtons();
     }
+
     setInterval(heartbeat, 500);
     heartbeat();
 })();
