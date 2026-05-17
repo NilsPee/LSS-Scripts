@@ -1,187 +1,533 @@
 // ==UserScript==
 // @name         Leitstelle De-/Activate buildings
-// @namespace    http://tampermonkey.net/
-// @version      1.0.1
-// @description  Aktiviert oder deaktiviert Gebäude in der Leitstellen in dem Gebäudetab durch Auslesen der Gebäudeseiten (Status aus Label "Einsatzbereit" / "Nicht einsatzbereit").
+// @namespace    NilsPe.activate.buildings.api
+// @version      2.1.0
+// @description  Aktiviert oder deaktiviert Gebäude einer Leitstelle über API-Speicher / IndexedDB mit Einstellungsseite
 // @author       Silberfighter & NilsPe
 // @match        https://www.leitstellenspiel.de/buildings*
-// @grant        none
+// @match        https://www.leitstellenspiel.de/settings/index*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @require      https://update.greasyfork.org/scripts/528065/Skripteinstellungen.user.js
+// @require      https://update.greasyfork.org/scripts/516844/API-Speicher.user.js
 // ==/UserScript==
 
-(function () {
+(async function () {
   'use strict';
 
-  // ===========================
-  // Konfiguration
-  // ===========================
+  //----------------------------------------------
+  // KONFIG / SETTINGS
+  //----------------------------------------------
 
-  const allowedTypes = [
-    0, //Feuerwache
-    2, //Rettungswache
-    6, //Polizeiwache
-    9, //THW-Ortsverband
-    11, //Bereitschaftspolizei
-    12, //SEG
-    13, //Polizeihubschrauber
-    15, //Wasserrettung
-    18, //Feuerwache kl
-    19, //Polizeiwache kl
-    20, //Rettungswache kl
+  const SETTINGS_IDENTIFIER = 'activate_buildings_api';
+  const KEY_ACTIVATE_TYPES = 'ab_activate_building_types';
+  const KEY_DEACTIVATE_TYPES = 'ab_deactivate_building_types';
+  const KEY_CONCURRENCY = 'ab_concurrency';
+  const KEY_PER_REQUEST_DELAY = 'ab_per_request_delay_ms';
+
+  const DEFAULT_ACTIVATE_TYPES = [0, 2, 6, 9, 11, 12, 13, 15, 18, 19, 20];
+  const DEFAULT_DEACTIVATE_TYPES = [0, 2, 6, 9, 11, 12, 13, 15, 18, 19, 20];
+  const DEFAULT_CONCURRENCY = 5;
+  const DEFAULT_PER_REQUEST_DELAY_MS = 100;
+
+  const BUILDING_TYPES = [
+    { id: 0, label: 'Feuerwache' },
+    { id: 1, label: 'Feuerwehrschule' },
+    { id: 2, label: 'Rettungswache' },
+    { id: 3, label: 'Rettungsschule' },
+    { id: 4, label: 'Krankenhaus' },
+    { id: 5, label: 'Rettungshubschrauber-Station' },
+    { id: 6, label: 'Polizeiwache' },
+    { id: 7, label: 'Leitstelle' },
+    { id: 8, label: 'Polizeischule' },
+    { id: 9, label: 'THW-Ortsverband' },
+    { id: 10, label: 'THW Bundesschule' },
+    { id: 11, label: 'Bereitschaftspolizei' },
+    { id: 12, label: 'Schnelleinsatzgruppe (SEG)' },
+    { id: 13, label: 'Polizeihubschrauberstation' },
+    { id: 14, label: 'Bereitstellungsraum' },
+    { id: 15, label: 'Wasserrettung' },
+    { id: 16, label: 'Verbandszellen' },
+    { id: 17, label: 'Polizei-Sondereinheiten' },
+    { id: 18, label: 'Feuerwache (Kleinwache)' },
+    { id: 19, label: 'Polizeiwache (Kleinwache)' },
+    { id: 20, label: 'Rettungswache (Kleinwache)' },
   ];
-
-  const CONCURRENCY = 3; // Wie viele Gebäude gleichzeitig geprüft werden
-  const PER_REQUEST_DELAY_MS = 100; // Pause zwischen Requests
 
   const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
-  // ===========================
-  // Status auf Gebäudeseite auslesen
-  // ===========================
-async function readBuildingInfo(buildingId) {
-  try {
-    const url = `/buildings/${buildingId}`;
-    const res = await fetch(url, { credentials: "same-origin" });
-    if (!res.ok) {
-      console.warn(`❌ Fehler beim Laden von Gebäude ${buildingId}`);
-      return null;
+  //----------------------------------------------
+  // SETTINGS-SEITE
+  //----------------------------------------------
+
+  if (location.pathname.startsWith('/settings/index')) {
+    if (!document.getElementById('ab-settings-style')) {
+      const style = document.createElement('style');
+      style.id = 'ab-settings-style';
+      style.textContent = `
+        body { padding-bottom: 140px !important; }
+        #${SETTINGS_IDENTIFIER} { padding-bottom: 140px !important; }
+      `;
+      document.head.appendChild(style);
     }
 
-    const html = await res.text();
-    const doc = new DOMParser().parseFromString(html, "text/html");
+    await addOptions({
+      identifier: SETTINGS_IDENTIFIER,
+      title: 'De-/Activate Buildings',
+      settings: [
+        { type: 'header', text: 'Gebäude aktivieren' },
+        {
+          type: 'select',
+          key: KEY_ACTIVATE_TYPES,
+          label: 'Gebäudetypen aktivieren',
+          title: 'Gebäude aktivieren',
+          multiple: true,
+          options: BUILDING_TYPES.map(t => ({
+            value: String(t.id),
+            label: `${t.id} ${t.label}`,
+            text: `${t.id} ${t.label}`,
+            name: `${t.id} ${t.label}`
+          }))
+        },
+        { type: 'header', text: 'Gebäude deaktivieren' },
+        {
+          type: 'select',
+          key: KEY_DEACTIVATE_TYPES,
+          label: 'Gebäudetypen deaktivieren',
+          title: 'Gebäude deaktivieren',
+          multiple: true,
+          options: BUILDING_TYPES.map(t => ({
+            value: String(t.id),
+            label: `${t.id} ${t.label}`,
+            text: `${t.id} ${t.label}`,
+            name: `${t.id} ${t.label}`
+          }))
+        },
+        { type: 'header', text: 'Ablauf / Delays' },
+        {
+          type: 'number',
+          key: KEY_CONCURRENCY,
+          default: DEFAULT_CONCURRENCY,
+          min: 1,
+          max: 20,
+          label: 'Parallele Gebäudeprüfungen'
+        },
+        {
+          type: 'number',
+          key: KEY_PER_REQUEST_DELAY,
+          default: DEFAULT_PER_REQUEST_DELAY_MS,
+          min: 0,
+          max: 5000,
+          label: 'Delay pro Request [ms]'
+        }
+      ]
+    });
 
-    // Status und Umschaltlink
-    const label = doc.querySelector("span.label");
-    const labelText = label?.textContent?.trim() || "—";
-    const labelClass = label?.className || "—";
-    const toggleA = doc.querySelector('a.btn[href*="/active"]');
-    const toggleHref = toggleA?.getAttribute("href");
+    const panel = document.getElementById(SETTINGS_IDENTIFIER);
+    if (!panel) return;
 
-    // Gebäudetyp aus Überschrift extrahieren (z. B. "Feuerwache", "THW-Ortsverband" …)
-    const title = doc.querySelector("h1")?.textContent?.trim() || "";
-    const typeName = title.split(" ")[0] || "";
-    const typeMap = {
-      "Feuerwache": 0,
-      "Rettungswache": 2,
-      "Polizeiwache": 6,
-      "THW-Ortsverband": 9,
-      "Bereitschaftspolizei": 11,
-      "Wasserrettung": 15,
-    };
-    const typeId = typeMap[typeName] ?? -1;
+    async function initSelect(settingKey, labelPrefix, defaultValues) {
+      const formGroups = panel.querySelectorAll('.form-group, .setting, div');
+      let select = null;
 
-    console.log(
-      `📄 [${buildingId}] label="${labelText}" class="${labelClass}" typeName="${typeName}" typeId=${typeId} href=${toggleHref}`
-    );
+      for (const fg of formGroups) {
+        const label = fg.querySelector('label');
+        if (!label) continue;
+        if (!label.textContent.trim().startsWith(labelPrefix)) continue;
+        const s = fg.querySelector('select[multiple]');
+        if (s) {
+          select = s;
+          break;
+        }
+      }
 
-    if (!label || !toggleA) {
-      console.warn(`⚠️ Kein Status oder Button gefunden bei Gebäude ${buildingId}`);
-      return null;
+      if (!select) return;
+
+      let selected = [];
+      try {
+        selected = JSON.parse(await GM_getValue(settingKey, JSON.stringify(defaultValues)));
+      } catch {
+        selected = defaultValues;
+      }
+
+      selected = selected.map(v => Number(v)).filter(Number.isInteger);
+
+      for (const opt of select.options) {
+        opt.selected = selected.includes(Number(opt.value));
+      }
+
+      select.dispatchEvent(new Event('change'));
+
+      select.addEventListener('change', async () => {
+        const values = Array.from(select.selectedOptions)
+          .map(o => Number(o.value))
+          .filter(Number.isInteger);
+        await GM_setValue(settingKey, JSON.stringify(values));
+      });
     }
 
-    const isActive = labelClass.includes("label-success");
-    return { isActive, typeId, toggleHref };
-  } catch (e) {
-    console.error("❗ Lesefehler bei Gebäude", buildingId, e);
-    return null;
+    await initSelect(KEY_ACTIVATE_TYPES, 'Gebäudetypen aktivieren', DEFAULT_ACTIVATE_TYPES);
+    await initSelect(KEY_DEACTIVATE_TYPES, 'Gebäudetypen deaktivieren', DEFAULT_DEACTIVATE_TYPES);
+    return;
   }
-}
 
+  //----------------------------------------------
+  // HELPERS
+  //----------------------------------------------
 
-  // ===========================
-  // Umschalten (GET-Request auf /active)
-  // ===========================
+  function getBuildingIdFromUrl() {
+    return Number(location.pathname.split('/').filter(Boolean).pop());
+  }
+
+  function getBuildingCaption(building) {
+    return building.caption || building.name || `Gebäude ${building.id}`;
+  }
+
+  function normalizeApiBuilding(building) {
+    return {
+      ...building,
+      id: Number(building.id),
+      name: getBuildingCaption(building),
+      type: Number(building.building_type),
+      building_type: Number(building.building_type),
+      leitstelle_building_id: building.leitstelle_building_id == null
+        ? null
+        : Number(building.leitstelle_building_id)
+    };
+  }
+
+  async function getAllowedTypes(wantEnabled) {
+    const key = wantEnabled ? KEY_ACTIVATE_TYPES : KEY_DEACTIVATE_TYPES;
+    const defaults = wantEnabled ? DEFAULT_ACTIVATE_TYPES : DEFAULT_DEACTIVATE_TYPES;
+
+    try {
+      const raw = await GM_getValue(key, JSON.stringify(defaults));
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map(v => Number(v)).filter(Number.isInteger);
+      }
+    } catch {}
+
+    return defaults;
+  }
+
+  async function getRunOptions(wantEnabled) {
+    const concurrency = Number(await GM_getValue(KEY_CONCURRENCY, DEFAULT_CONCURRENCY)) || DEFAULT_CONCURRENCY;
+    const delayMs = Number(await GM_getValue(KEY_PER_REQUEST_DELAY, DEFAULT_PER_REQUEST_DELAY_MS)) || DEFAULT_PER_REQUEST_DELAY_MS;
+
+    return {
+      concurrency: Math.max(1, Math.min(20, concurrency)),
+      delayMs: Math.max(0, delayMs),
+      allowedTypes: await getAllowedTypes(wantEnabled)
+    };
+  }
+
+  //----------------------------------------------
+  // API-SPEICHER
+  //----------------------------------------------
+
+  async function loadApiBuildingsFromCache(maxAgeSeconds = 60) {
+    if (typeof openDb !== 'function' || typeof updateBuildings !== 'function') {
+      throw new Error('API-Speicher ist nicht verfügbar.');
+    }
+
+    const db = await openDb();
+    await updateBuildings(db, maxAgeSeconds);
+
+    const tryLoaders = [
+      async () => {
+        if (typeof getDataByIndex !== 'function') return null;
+        return await getDataByIndex(
+          db,
+          'buildings',
+          'building_type',
+          IDBKeyRange.bound(0, 999)
+        );
+      },
+      async () => {
+        if (typeof getDataByIndex !== 'function') return null;
+        return await getDataByIndex(
+          db,
+          'buildings',
+          'building_type',
+          IDBKeyRange.lowerBound(0)
+        );
+      },
+      async () => {
+        if (typeof getAllData !== 'function') return null;
+        return await getAllData(db, 'buildings');
+      },
+      async () => {
+        if (typeof getData !== 'function') return null;
+        return await getData(db, 'buildings');
+      },
+      async () => {
+        return await new Promise((resolve, reject) => {
+          const transaction = db.transaction('buildings', 'readonly');
+          const store = transaction.objectStore('buildings');
+          const request = store.getAll();
+
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error || new Error('IndexedDB Fehler'));
+        });
+      }
+    ];
+
+    let lastError = null;
+
+    for (const loader of tryLoaders) {
+      try {
+        const data = await loader();
+
+        if (Array.isArray(data)) {
+          console.log('[Activate Buildings] Gebäude aus API-Speicher geladen:', data.length);
+          return data.map(normalizeApiBuilding);
+        }
+      } catch (e) {
+        lastError = e;
+        console.warn('[Activate Buildings] Loader fehlgeschlagen:', e);
+      }
+    }
+
+    throw lastError || new Error('Keine Gebäude geladen');
+  }
+
+  async function getBuildingsOfLeitstelle(leitstellenId, allowedTypes) {
+    const targetId = Number(leitstellenId);
+    const allBuildings = await loadApiBuildingsFromCache(60);
+
+    return allBuildings
+      .filter(b => b.leitstelle_building_id === targetId)
+      .filter(b => allowedTypes.includes(b.building_type))
+      .sort((a, b) => a.id - b.id);
+  }
+
+  //----------------------------------------------
+  // GEBÄUDESTATUS LADEN
+  //----------------------------------------------
+
+  async function readBuildingInfo(buildingId) {
+    try {
+      const url = `/buildings/${buildingId}`;
+      const res = await fetch(url, {
+        credentials: 'same-origin'
+      });
+
+      if (!res.ok) {
+        console.warn(`❌ Fehler beim Laden von Gebäude ${buildingId}`);
+        return null;
+      }
+
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+
+      const label = doc.querySelector('span.label');
+      const labelClass = label?.className || '';
+
+      const toggleA = doc.querySelector('a.btn[href*="/active"]');
+      const toggleHref = toggleA?.getAttribute('href');
+
+      if (!label || !toggleA || !toggleHref) {
+        console.warn(`⚠️ Kein Status oder Button gefunden bei Gebäude ${buildingId}`);
+        return null;
+      }
+
+      const isActive = labelClass.includes('label-success');
+
+      return {
+        isActive,
+        toggleHref
+      };
+    } catch (e) {
+      console.error('❗ Lesefehler bei Gebäude', buildingId, e);
+      return null;
+    }
+  }
+
+  //----------------------------------------------
+  // UMSCHALTEN
+  //----------------------------------------------
+
   async function toggleBuilding(toggleHref) {
     try {
       const res = await fetch(toggleHref, {
-        method: "GET",
-        credentials: "same-origin",
-        headers: { "x-requested-with": "XMLHttpRequest" },
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: {
+          'x-requested-with': 'XMLHttpRequest'
+        }
       });
+
       return res.ok;
     } catch (e) {
-      console.warn("Fehler beim Umschalten", toggleHref, e);
+      console.warn('Fehler beim Umschalten', toggleHref, e);
       return false;
     }
   }
 
-  // ===========================
-  // Buttons hinzufügen
-  // ===========================
-function addButtonsIfMissing() {
-  const tab = document.querySelector("#tab_buildings");
-  if (!tab) return;
+  //----------------------------------------------
+  // UI BAR
+  //----------------------------------------------
 
-  const table = tab.querySelector("table");
-  if (!table) return;
+  function ensureStyles() {
+    if (document.getElementById('ab-style')) return;
 
-  if (tab.querySelector(".building-control-container")) return;
+    const s = document.createElement('style');
+    s.id = 'ab-style';
 
-  // --- Container für beide Buttons ---
-  const box = document.createElement("div");
-  box.className = "building-control-container";
-  box.style.display = "flex";
-  box.style.flexWrap = "wrap";
-  box.style.gap = "1px";
-  box.style.alignItems = "center";
-  box.style.margin = "10px 0";
-
-  // --- Button-Konfiguration ---
-  [
-    { label: "Alle aktivieren", wantEnabled: true, color: "success" },
-    { label: "Alle deaktivieren", wantEnabled: false, color: "danger" },
-  ].forEach(cfg => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = cfg.label;
-    btn.className = `btn btn-${cfg.color} btn-xs`;
-
-    const status = document.createElement("span");
-    status.style.fontWeight = "bold";
-    status.style.color = "white";
-    status.style.marginLeft = "6px";
-
-    // --- Klick-Handler ---
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      status.textContent = "Lese Gebäudeliste …";
-      status.style.color = "white";
-
-      const ids = Array.from(document.querySelectorAll("#tab_buildings tbody tr"))
-        .map(r => {
-          const a = r.querySelector('a[href^="/buildings/"]');
-          const m = a && a.getAttribute("href").match(/\/buildings\/(\d+)/);
-          return m ? parseInt(m[1], 10) : null;
-        })
-        .filter(Boolean);
-
-      if (ids.length === 0) {
-        status.textContent = "Keine Gebäude gefunden";
-        status.style.color = "red";
-        btn.disabled = false;
-        return;
+    s.textContent = `
+      #ab-nav {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: #f8f8f8;
+        border-top: 1px solid #e7e7e7;
+        z-index: 2147483000;
+        padding: 6px 10px;
       }
 
-      let done = 0, changed = 0, total = ids.length;
-      status.textContent = `0 / ${total} … läuft (geändert: 0)`;
+      body.ab-hasbar {
+        padding-bottom: 40px !important;
+      }
 
-      let idx = 0;
-      async function worker() {
-        while (idx < ids.length) {
-          const id = ids[idx++];
-          const info = await readBuildingInfo(id);
+      #ab-wrap {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      #ab-state {
+        min-width: 240px;
+        font-size: 13px;
+      }
+
+      #ab-progress {
+        flex: 1;
+        height: 12px;
+        background: #eee;
+        border-radius: 4px;
+        overflow: hidden;
+        display: flex;
+      }
+
+      #ab-bar-ok {
+        height: 100%;
+        background: #5cb85c;
+        width: 0%;
+      }
+
+      #ab-bar-err {
+        height: 100%;
+        background: #d9534f;
+        width: 0%;
+      }
+    `;
+
+    document.head.appendChild(s);
+  }
+
+  function createNavbar() {
+    if (document.getElementById('ab-nav')) return;
+
+    ensureStyles();
+
+    const nav = document.createElement('div');
+    nav.id = 'ab-nav';
+
+    const wrap = document.createElement('div');
+    wrap.id = 'ab-wrap';
+
+    const label = document.createElement('span');
+    label.id = 'ab-state';
+    label.className = 'label label-success';
+    label.textContent = 'Bereit';
+
+    const progress = document.createElement('div');
+    progress.id = 'ab-progress';
+
+    const ok = document.createElement('div');
+    ok.id = 'ab-bar-ok';
+
+    const err = document.createElement('div');
+    err.id = 'ab-bar-err';
+
+    progress.append(ok, err);
+    wrap.append(label, progress);
+    nav.append(wrap);
+
+    document.body.append(nav);
+    document.body.classList.add('ab-hasbar');
+  }
+
+  function setState(text, cls = 'info') {
+    const label = document.getElementById('ab-state');
+    if (!label) return;
+
+    label.className = `label label-${cls}`;
+    label.textContent = text;
+  }
+
+  function updateProgress(ok, err, total) {
+    const okBar = document.getElementById('ab-bar-ok');
+    const errBar = document.getElementById('ab-bar-err');
+    const label = document.getElementById('ab-state');
+
+    if (!okBar || !errBar || !label) return;
+
+    const safeTotal = Math.max(total, 1);
+
+    okBar.style.width = `${(ok / safeTotal) * 100}%`;
+    errBar.style.width = `${(err / safeTotal) * 100}%`;
+    label.textContent = `${ok + err}/${total} Gebäude`;
+  }
+
+  //----------------------------------------------
+  // LEITSTELLENLAUF
+  //----------------------------------------------
+
+  async function processLeitstelle(leitstellenId, wantEnabled) {
+    createNavbar();
+
+    setState('Lade Einstellungen…', 'info');
+    const options = await getRunOptions(wantEnabled);
+
+    setState('Lade Gebäude über API-Speicher…', 'info');
+
+    const buildings = await getBuildingsOfLeitstelle(leitstellenId, options.allowedTypes);
+
+    if (!buildings.length) {
+      setState('Keine Gebäude gefunden', 'warning');
+      return;
+    }
+
+    let done = 0;
+    let changed = 0;
+    let errors = 0;
+
+    const total = buildings.length;
+
+    let idx = 0;
+
+    async function worker() {
+      while (idx < buildings.length) {
+        const building = buildings[idx++];
+
+        try {
+          setState(`${building.name}`, 'info');
+
+          const info = await readBuildingInfo(building.id);
+
           if (!info) {
             done++;
-            continue;
-          }
-
-          if (allowedTypes.length && !allowedTypes.includes(info.typeId)) {
-            done++;
+            errors++;
+            updateProgress(done - errors, errors, total);
             continue;
           }
 
           const shouldToggle =
-            (cfg.wantEnabled && !info.isActive) ||
-            (!cfg.wantEnabled && info.isActive);
+            (wantEnabled && !info.isActive) ||
+            (!wantEnabled && info.isActive);
 
           if (shouldToggle) {
             const ok = await toggleBuilding(info.toggleHref);
@@ -189,33 +535,100 @@ function addButtonsIfMissing() {
           }
 
           done++;
-          status.textContent = `${done} / ${total} … läuft (geändert: ${changed})`;
-          await delay(PER_REQUEST_DELAY_MS);
+          updateProgress(done - errors, errors, total);
+
+          await delay(options.delayMs);
+        } catch (e) {
+          console.error('[Activate Buildings] Fehler bei Gebäude', building.id, e);
+          done++;
+          errors++;
+          updateProgress(done - errors, errors, total);
         }
       }
+    }
 
-      await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+    await Promise.all(Array.from({ length: options.concurrency }, () => worker()));
 
-      status.textContent = `✔ Fertig (${changed} geändert von ${total})`;
-      status.style.color = "green";
-      btn.disabled = false;
-    });
+    setState(`Fertig (${changed} geändert)`, errors ? 'warning' : 'success');
+  }
 
-    // --- Button + Status nebeneinander ---
-    const group = document.createElement("div");
-    group.style.display = "flex";
-    group.style.alignItems = "center";
-    group.style.gap = "6px";
-    group.appendChild(btn);
-    group.appendChild(status);
+  //----------------------------------------------
+  // BUTTONS
+  //----------------------------------------------
 
-    box.appendChild(group);
-  });
+  function addButtonsToBuildingDetails() {
+    const h1 = document.querySelector('h1[building_type]');
+    if (!h1) return;
 
-  table.parentNode.insertBefore(box, table);
-}
+    const buildingTypeID = Number(h1.getAttribute('building_type'));
 
+    // nur Leitstelle
+    if (buildingTypeID !== 7) return;
 
-  // Script initialisieren
-  setInterval(addButtonsIfMissing, 1000);
+    const buildingDetailsElement = document.querySelector('.building-title ~ dl.dl-horizontal');
+    if (!buildingDetailsElement) return;
+
+    if (document.getElementById('ab-building-details-buttons')) return;
+
+    const dtElement = document.createElement('dt');
+    const dtTextElement = document.createElement('strong');
+    dtTextElement.innerText = 'Gebäude de-/aktivieren:';
+    dtElement.appendChild(dtTextElement);
+
+    const ddElement = document.createElement('dd');
+
+    const buttonGroup = document.createElement('div');
+    buttonGroup.id = 'ab-building-details-buttons';
+    buttonGroup.className = 'btn-group';
+
+    const actions = [
+      { label: 'Aktivieren', wantEnabled: true },
+      { label: 'Deaktivieren', wantEnabled: false }
+    ];
+
+    for (const cfg of actions) {
+      const btn = document.createElement('a');
+      btn.href = '';
+      btn.className = 'btn btn-default btn-xs';
+      btn.innerText = cfg.label;
+
+      btn.addEventListener('click', async (event) => {
+        event.preventDefault();
+
+        if (btn.classList.contains('disabled')) return;
+
+        btn.classList.add('disabled');
+
+        try {
+          await processLeitstelle(getBuildingIdFromUrl(), cfg.wantEnabled);
+        } catch (e) {
+          console.error('[Activate Buildings] Leitstellenlauf fehlgeschlagen', e);
+          createNavbar();
+          setState('Fehler beim Leitstellenlauf', 'danger');
+        }
+
+        btn.classList.remove('disabled');
+      });
+
+      buttonGroup.appendChild(btn);
+    }
+
+    const btnSettings = document.createElement('a');
+    btnSettings.className = 'btn btn-default btn-xs';
+    btnSettings.href = `/settings/index#${SETTINGS_IDENTIFIER}`;
+    btnSettings.target = '_blank';
+
+    const cog = document.createElement('span');
+    cog.className = 'glyphicon glyphicon-cog';
+    cog.title = 'Einstellungen';
+    btnSettings.appendChild(cog);
+    buttonGroup.appendChild(btnSettings);
+
+    ddElement.appendChild(buttonGroup);
+
+    buildingDetailsElement.appendChild(dtElement);
+    buildingDetailsElement.appendChild(ddElement);
+  }
+
+  addButtonsToBuildingDetails();
 })();
