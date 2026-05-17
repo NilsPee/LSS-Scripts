@@ -378,8 +378,10 @@
     settingsBtn.appendChild(cog);
 
     const wrapper = document.createElement('div');
-    wrapper.className = 'btn-group';
-    wrapper.style.marginBottom = '6px';
+
+    wrapper.style.display = 'flex';
+    wrapper.style.alignItems = 'center';
+    wrapper.style.margin = '8px 0';
 
     wrapper.appendChild(btn);
     wrapper.appendChild(settingsBtn);
